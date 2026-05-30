@@ -248,3 +248,38 @@ export interface AgentRun {
   created_at?: string;
   updated_at?: string;
 }
+
+export type ReviewRunStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export type ReviewVerdict = 'ready_to_merge' | 'issues_found';
+
+export type ReviewDeliveryTarget = 'github_pr_comment' | 'task_comment';
+
+export interface ReviewIssue {
+  severity: 'critical' | 'major' | 'minor';
+  title: string;
+  detail: string;
+  file?: string | null;
+  line?: number | null;
+}
+
+export interface ReviewRun {
+  id: string;
+  build_run_id: string;
+  task_id: number;
+  status: ReviewRunStatus;
+  verdict: ReviewVerdict | null;
+  summary: string | null;
+  issues: ReviewIssue[];
+  delivery_target: ReviewDeliveryTarget;
+  github_comment_url: string | null;
+  task_comment_id: number | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

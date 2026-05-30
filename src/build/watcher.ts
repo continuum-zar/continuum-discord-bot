@@ -1,4 +1,10 @@
-import type { Client, TextBasedChannel } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  type Client,
+  type TextBasedChannel,
+} from 'discord.js';
 import { logger } from '../logger.js';
 import {
   deleteWatcher,
@@ -10,6 +16,7 @@ import {
 import { getAgentRun } from '../tools/startBuild.js';
 import { ContinuumApiError } from '../api/continuumClient.js';
 import { LinkExpiredError, NotLinkedError } from '../auth/tokenManager.js';
+import { buildReviewCustomId } from '../discord/handlers/buttonHandler.js';
 import type { AgentRun, AgentRunStatus } from '../api/types.js';
 
 const POLL_INTERVAL_MS = 25_000;
@@ -108,7 +115,25 @@ async function notifyTerminal(
   } else if (run.status === 'cancelled') {
     lines.push('_Cancelled._');
   }
-  await deliver(client, w, lines.join('\n'));
+
+  // Attach a Review button on success when the build produced something to review.
+  const reviewable =
+    run.status === 'succeeded' &&
+    ((run.mode === 'open_pr' && !!run.pr_url) ||
+      (run.mode === 'direct_push' && !!run.commit_sha));
+  const components = reviewable
+    ? [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(buildReviewCustomId(w.task_id, run.id))
+            .setLabel('Review')
+            .setEmoji('🔎')
+            .setStyle(ButtonStyle.Primary),
+        ),
+      ]
+    : [];
+
+  await deliver(client, w, lines.join('\n'), components);
 }
 
 async function notifyUnlinked(client: Client, w: BuildWatcher): Promise<void> {
@@ -127,11 +152,16 @@ async function notifyGaveUp(client: Client, w: BuildWatcher): Promise<void> {
   );
 }
 
-async function deliver(client: Client, w: BuildWatcher, content: string): Promise<void> {
+async function deliver(
+  client: Client,
+  w: BuildWatcher,
+  content: string,
+  components: ActionRowBuilder<ButtonBuilder>[] = [],
+): Promise<void> {
   // Prefer DM. Fall back to original channel if the DM fails.
   try {
     const user = await client.users.fetch(w.discord_user_id);
-    await user.send({ content });
+    await user.send({ content, components });
     return;
   } catch (err) {
     logger.debug({ err, userId: w.discord_user_id }, 'watcher: DM failed, trying channel');
@@ -140,8 +170,17 @@ async function deliver(client: Client, w: BuildWatcher, content: string): Promis
     if (!w.channel_id) return;
     const channel = await client.channels.fetch(w.channel_id);
     if (channel && channel.isTextBased() && 'send' in channel) {
-      await (channel as TextBasedChannel & { send: (m: { content: string; reply?: { messageReference: string } }) => Promise<unknown> }).send({
+      await (
+        channel as TextBasedChannel & {
+          send: (m: {
+            content: string;
+            components?: ActionRowBuilder<ButtonBuilder>[];
+            reply?: { messageReference: string };
+          }) => Promise<unknown>;
+        }
+      ).send({
         content,
+        components,
         ...(w.message_id ? { reply: { messageReference: w.message_id } } : {}),
       });
     }

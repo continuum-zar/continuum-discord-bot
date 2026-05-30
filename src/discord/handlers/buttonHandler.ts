@@ -24,7 +24,9 @@ import { executeLinkBranch } from '../../tools/linkBranch.js';
 import { executeAttachLink } from '../../tools/attachLink.js';
 import { executeCreateGitBranch } from '../../tools/createGitBranch.js';
 import { executeStartBuild, cancelAgentRun } from '../../tools/startBuild.js';
+import { executeStartReview } from '../../tools/startReview.js';
 import { createWatcher, deleteWatcher } from '../../db/buildWatchers.js';
+import { createReviewWatcher } from '../../db/reviewWatchers.js';
 import type {
   AgentRunMode,
   CreateTaskInput,
@@ -43,7 +45,12 @@ const CONFIRM_PREFIX = 'pa:confirm:';
 const CANCEL_PREFIX = 'pa:cancel:';
 const MODE_PREFIX = 'pa:mode:';
 const CANCEL_BUILD_PREFIX = 'pa:cancelbuild:';
+const REVIEW_PREFIX = 'pa:review:';
 export const MILESTONE_SELECT_PREFIX = 'pa:milestone:';
+
+export function buildReviewCustomId(taskId: number, runId: string): string {
+  return `${REVIEW_PREFIX}${taskId}:${runId}`;
+}
 
 export function buildCustomIds(pendingActionId: string): {
   confirm: string;
@@ -73,7 +80,8 @@ export function attachButtonHandler(client: Client): void {
       !id.startsWith(CONFIRM_PREFIX) &&
       !id.startsWith(CANCEL_PREFIX) &&
       !id.startsWith(MODE_PREFIX) &&
-      !id.startsWith(CANCEL_BUILD_PREFIX)
+      !id.startsWith(CANCEL_BUILD_PREFIX) &&
+      !id.startsWith(REVIEW_PREFIX)
     ) {
       return;
     }
@@ -86,6 +94,11 @@ async function handle(interaction: ButtonInteraction): Promise<void> {
 
   if (id.startsWith(CANCEL_BUILD_PREFIX)) {
     await handleCancelBuild(interaction);
+    return;
+  }
+
+  if (id.startsWith(REVIEW_PREFIX)) {
+    await handleStartReview(interaction);
     return;
   }
 
@@ -207,6 +220,41 @@ async function handleModeSelect(interaction: ButtonInteraction): Promise<void> {
   );
 
   await interaction.editReply({ embeds: [embed], components: [buttons] });
+}
+
+async function handleStartReview(interaction: ButtonInteraction): Promise<void> {
+  const rest = interaction.customId.slice(REVIEW_PREFIX.length);
+  const sep = rest.indexOf(':');
+  if (sep < 0) return;
+  const taskId = Number.parseInt(rest.slice(0, sep), 10);
+  const runId = rest.slice(sep + 1);
+  if (!Number.isFinite(taskId) || !runId) return;
+
+  await interaction.deferUpdate();
+
+  try {
+    const review = await executeStartReview(interaction.user.id, taskId, runId);
+    await createReviewWatcher({
+      reviewId: review.id,
+      buildRunId: runId,
+      taskId,
+      discordUserId: interaction.user.id,
+      channelId: interaction.channelId ?? '',
+      messageId: interaction.message?.id ?? null,
+    });
+    await interaction.editReply({
+      content: `🔎 Review started for build \`${runId.slice(0, 8)}\` (task #${taskId}). I'll DM you the verdict.`,
+      components: [],
+      embeds: [],
+    });
+  } catch (err) {
+    const msg = errorMessage(err);
+    logger.warn({ err, taskId, runId }, 'start review failed');
+    await interaction.followUp({
+      content: `Couldn't start review: ${msg}`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
 }
 
 async function handleCancelBuild(interaction: ButtonInteraction): Promise<void> {

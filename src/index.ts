@@ -8,6 +8,7 @@ import { buildApp } from './server/app.js';
 import { shutdownPool } from './db/pool.js';
 import { startCleanupCron } from './db/cleanupCron.js';
 import { startBuildWatcher } from './build/watcher.js';
+import { startReviewWatcher } from './review/watcher.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -27,11 +28,13 @@ async function main(): Promise<void> {
 
   const cleanup = startCleanupCron();
   const buildWatcher = startBuildWatcher(client);
+  const reviewWatcher = startReviewWatcher(client);
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'shutting down');
     cleanup.stop();
     buildWatcher.stop();
+    reviewWatcher.stop();
     server.close();
     await client.destroy();
     await shutdownPool();
