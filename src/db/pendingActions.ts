@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { query } from './pool.js';
 
-export type PendingActionKind = 'create_task' | 'set_task_status' | 'add_comment';
+export type PendingActionKind =
+  | 'create_task'
+  | 'draft_task'
+  | 'set_task_status'
+  | 'add_comment';
 
 export interface PendingAction {
   id: string;

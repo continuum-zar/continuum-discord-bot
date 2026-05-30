@@ -7,7 +7,8 @@ import { projectQuery } from '../tools/projectQuery.js';
 import { resolveProject } from '../tools/resolveProject.js';
 import { listMilestones } from '../tools/listMilestones.js';
 import { createPendingAction } from '../db/pendingActions.js';
-import type { CreateTaskInput } from '../api/types.js';
+import type { CreateTaskInput, GeneratedTask } from '../api/types.js';
+import { generateDraftTasks } from '../tools/draftTasks.js';
 
 export interface ToolContext {
   discordUserId: string;
@@ -46,6 +47,71 @@ function optStr(args: Record<string, unknown>, key: string): string | undefined 
 function optNum(args: Record<string, unknown>, key: string): number | undefined {
   const v = args[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+export interface DraftTaskPayload {
+  project_id: number;
+  prompt: string;
+  tasks: GeneratedTask[];
+  source_files_used: string[];
+  confidence: number;
+  milestone_id?: number | null;
+}
+
+export function buildDraftTaskPreview(
+  payload: DraftTaskPayload,
+  milestoneName?: string | null,
+): string {
+  const t = payload.tasks[0];
+  if (!t) {
+    return `**AI assistant** couldn't draft a task for that prompt in project ${payload.project_id}.`;
+  }
+  const filesLine =
+    payload.source_files_used.length > 0
+      ? `\n• Repo context: ${payload.source_files_used.slice(0, 3).join(', ')}${
+          payload.source_files_used.length > 3 ? ` +${payload.source_files_used.length - 3}` : ''
+        }`
+      : '';
+  const relevantLine =
+    t.relevant_files.length > 0
+      ? `\n• Relevant files: ${t.relevant_files.slice(0, 3).join(', ')}${
+          t.relevant_files.length > 3 ? ` +${t.relevant_files.length - 3}` : ''
+        }`
+      : '';
+  const checklistLine =
+    t.checklist && t.checklist.length > 0 ? `\n• Checklist: ${t.checklist.length} items` : '';
+  const rationaleLine = t.rationale ? `\n• Why: ${truncate(t.rationale, 240)}` : '';
+  const descLine = t.description ? `\n• Description: ${truncate(t.description, 240)}` : '';
+  const labelsLine =
+    t.labels && t.labels.length > 0 ? `\n• Labels: ${t.labels.join(', ')}` : '';
+  const milestoneLine =
+    payload.milestone_id != null
+      ? `\n• Milestone: ${milestoneName ? `${milestoneName} (#${payload.milestone_id})` : `#${payload.milestone_id}`}`
+      : '\n• Milestone: _(none — pick one from the dropdown below)_';
+  const extraTasksLine =
+    payload.tasks.length > 1
+      ? `\n_+ ${payload.tasks.length - 1} more drafted task(s) — all will be created on Confirm._`
+      : '';
+
+  return (
+    `**Draft task** (AI, repo-aware) in project ${payload.project_id}\n` +
+    `• Title: ${t.title}\n` +
+    `• Scope: ${t.scope_weight}` +
+    (t.priority ? ` · priority: ${t.priority}` : '') +
+    (t.estimated_hours != null ? ` · ~${t.estimated_hours}h` : '') +
+    descLine +
+    rationaleLine +
+    relevantLine +
+    checklistLine +
+    labelsLine +
+    filesLine +
+    milestoneLine +
+    extraTasksLine
+  );
 }
 
 export function buildCreateTaskPreview(payload: CreateTaskInput, milestoneName?: string | null): string {
@@ -275,6 +341,91 @@ export const writeTools: Record<string, ToolHandler> = {
         projectId: payload.project_id,
       };
       return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  draft_task: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'draft_task',
+        description:
+          "Ask the repo-aware AI task assistant to DRAFT a task from a free-text prompt, using " +
+          "the project's scanned Code Wiki (source files, design docs, etc.) as context. " +
+          "Use this whenever the user wants the bot to flesh out a task (description, scope, " +
+          "checklist, relevant files) rather than dictate one verbatim — e.g. 'draft a task to " +
+          "wire up Stripe refunds', 'add a task for fixing the auth race condition'. " +
+          "For terse one-liners where the user clearly already wrote the title themselves, " +
+          "prefer create_task. Does NOT execute — returns a staged pending action that the user " +
+          "confirms in Discord. The milestone picker appears automatically.",
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            prompt: {
+              type: 'string',
+              description:
+                "What the task should be about, as a natural-language brief. Pass the user's " +
+                'request through largely verbatim — the AI assistant will use repo context to ' +
+                'expand it. Avoid pre-writing a title; let the assistant draft it.',
+            },
+            max_tasks: {
+              type: 'number',
+              description:
+                'How many tasks to draft. Default 1 (single-task UX). Only raise this if the ' +
+                "user explicitly asked for multiple tasks ('draft a few tasks for X'). Capped at 5.",
+              minimum: 1,
+              maximum: 5,
+            },
+          },
+          required: ['project_id', 'prompt'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const projectId = num(args, 'project_id');
+      const prompt = str(args, 'prompt');
+      const maxRaw = optNum(args, 'max_tasks');
+      const maxTasks = Math.max(1, Math.min(5, maxRaw ?? 1));
+
+      const gen = await generateDraftTasks(ctx.discordUserId, projectId, prompt, maxTasks);
+
+      if (!gen.tasks || gen.tasks.length === 0) {
+        // The assistant returned a clarification or no-results reply.
+        return {
+          drafted: false,
+          reply: gen.reply ?? null,
+          confidence: gen.confidence,
+        };
+      }
+
+      const payload: DraftTaskPayload = {
+        project_id: projectId,
+        prompt: gen.prompt,
+        tasks: gen.tasks,
+        source_files_used: gen.source_files_used,
+        confidence: gen.confidence,
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'draft_task',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildDraftTaskPreview(payload);
+      ctx.stagedPendingAction = {
+        id: pa.id,
+        action: 'draft_task',
+        preview,
+        projectId,
+      };
+      return {
+        pending_action_id: pa.id,
+        preview,
+        drafted: true,
+        task_count: gen.tasks.length,
+        confidence: gen.confidence,
+      };
     },
   },
 

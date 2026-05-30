@@ -17,7 +17,11 @@ import {
   updatePayload,
 } from '../../db/pendingActions.js';
 import { listMilestones } from '../../tools/listMilestones.js';
-import { buildCreateTaskPreview } from '../../agent/tools.js';
+import {
+  buildCreateTaskPreview,
+  buildDraftTaskPreview,
+  type DraftTaskPayload,
+} from '../../agent/tools.js';
 import type { CreateTaskInput } from '../../api/types.js';
 import { buildCustomIds, MILESTONE_SELECT_PREFIX } from './buttonHandler.js';
 
@@ -53,33 +57,41 @@ async function handle(interaction: StringSelectMenuInteraction): Promise<void> {
     return;
   }
 
-  if (pa.action !== 'create_task') {
+  if (pa.action !== 'create_task' && pa.action !== 'draft_task') {
     return;
   }
 
   const choice = interaction.values[0];
-  const payload = pa.payload as unknown as CreateTaskInput;
+  const projectId =
+    pa.action === 'create_task'
+      ? (pa.payload as unknown as CreateTaskInput).project_id
+      : (pa.payload as unknown as DraftTaskPayload).project_id;
 
+  // Mutate the staged payload's milestone_id (works for both kinds).
+  const mutable = pa.payload as Record<string, unknown>;
   let milestoneName: string | null = null;
   if (choice === NO_MILESTONE_VALUE) {
-    delete payload.milestone_id;
+    delete mutable.milestone_id;
   } else {
     const milestoneId = Number.parseInt(choice, 10);
     if (!Number.isFinite(milestoneId)) return;
-    payload.milestone_id = milestoneId;
+    mutable.milestone_id = milestoneId;
 
     try {
-      const milestones = await listMilestones(pa.discord_user_id, payload.project_id);
+      const milestones = await listMilestones(pa.discord_user_id, projectId);
       milestoneName = milestones.find((m) => m.id === milestoneId)?.name ?? null;
     } catch (err) {
       logger.warn({ err, milestoneId }, 'failed to look up milestone name');
     }
   }
 
-  await updatePayload(pendingId, payload as unknown as Record<string, unknown>);
+  await updatePayload(pendingId, mutable);
 
   const ids = buildCustomIds(pendingId);
-  const newPreview = buildCreateTaskPreview(payload, milestoneName);
+  const newPreview =
+    pa.action === 'create_task'
+      ? buildCreateTaskPreview(mutable as unknown as CreateTaskInput, milestoneName)
+      : buildDraftTaskPreview(mutable as unknown as DraftTaskPayload, milestoneName);
   const embed = new EmbedBuilder()
     .setTitle('Confirm action')
     .setDescription(newPreview)
@@ -88,7 +100,7 @@ async function handle(interaction: StringSelectMenuInteraction): Promise<void> {
   // Rebuild the select menu so the chosen option stays highlighted.
   let rebuiltSelectRow: ActionRowBuilder<StringSelectMenuBuilder> | null = null;
   try {
-    const milestones = await listMilestones(pa.discord_user_id, payload.project_id);
+    const milestones = await listMilestones(pa.discord_user_id, projectId);
     rebuiltSelectRow = buildMilestoneSelectRow(ids.milestoneSelect, milestones, choice);
   } catch (err) {
     logger.warn({ err }, 'failed to rebuild milestone select after pick');

@@ -83,7 +83,10 @@ async function handle(client: Client, message: Message): Promise<void> {
         .setFooter({ text: 'Expires in 5 minutes' });
       const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [];
 
-      if (action === 'create_task' && result.stagedPendingAction.projectId != null) {
+      if (
+        (action === 'create_task' || action === 'draft_task') &&
+        result.stagedPendingAction.projectId != null
+      ) {
         const projectId = result.stagedPendingAction.projectId;
         try {
           const milestones = await listMilestones(message.author.id, projectId);

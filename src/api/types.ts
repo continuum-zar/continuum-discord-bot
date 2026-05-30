@@ -130,3 +130,47 @@ export interface MilestoneList {
   skip: number;
   limit: number;
 }
+
+export interface GeneratedTaskChecklistItem {
+  title: string;
+  is_completed?: boolean;
+}
+
+export interface GeneratedTask {
+  title: string;
+  description?: string | null;
+  scope_weight: 'XS' | 'S' | 'M' | 'L' | 'XL';
+  priority?: 'high' | 'medium' | 'low' | 'info';
+  estimated_hours?: number | null;
+  rationale: string;
+  relevant_files: string[];
+  checklist: GeneratedTaskChecklistItem[];
+  labels?: string[];
+}
+
+export interface GenerateTasksResponse {
+  project_id: number;
+  prompt: string;
+  tasks: GeneratedTask[];
+  source_files_used: string[];
+  confidence: number;
+  reply?: string | null;
+}
+
+export interface WikiConfirmTaskItem {
+  title: string;
+  description?: string | null;
+  status?: 'todo' | 'in_progress' | 'done';
+  project_id: number;
+  milestone_id?: number | null;
+  priority?: 'high' | 'medium' | 'low' | 'info';
+  scope_weight: 'XS' | 'S' | 'M' | 'L' | 'XL';
+  estimated_hours?: number | null;
+  checklists?: Array<{ text: string; done?: boolean }> | null;
+  labels?: string[] | null;
+}
+
+export interface ConfirmTasksResponse {
+  created_count: number;
+  task_ids: number[];
+}

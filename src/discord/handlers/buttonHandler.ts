@@ -14,7 +14,9 @@ import {
 import { executeCreateTask } from '../../tools/createTask.js';
 import { executeSetTaskStatus } from '../../tools/setTaskStatus.js';
 import { executeAddComment } from '../../tools/addComment.js';
+import { confirmDraftedTasks, mapGeneratedToConfirm } from '../../tools/draftTasks.js';
 import type { CreateTaskInput } from '../../api/types.js';
+import type { DraftTaskPayload } from '../../agent/tools.js';
 import { ContinuumApiError } from '../../api/continuumClient.js';
 import { LinkExpiredError, NotLinkedError } from '../../auth/tokenManager.js';
 
@@ -96,6 +98,19 @@ async function executeAction(pa: PendingAction): Promise<string> {
       const input = pa.payload as unknown as CreateTaskInput;
       const task = await executeCreateTask(pa.discord_user_id, input);
       return `✅ Created task **#${task.id}**: ${task.title}`;
+    }
+    case 'draft_task': {
+      const payload = pa.payload as unknown as DraftTaskPayload;
+      const items = payload.tasks.map((t) =>
+        mapGeneratedToConfirm(t, payload.project_id, payload.milestone_id ?? null),
+      );
+      const res = await confirmDraftedTasks(pa.discord_user_id, payload.project_id, items);
+      if (res.created_count === 1 && res.task_ids[0] != null) {
+        return `✅ Created task **#${res.task_ids[0]}**: ${items[0].title}`;
+      }
+      return `✅ Created ${res.created_count} task(s): ${res.task_ids
+        .map((id) => `#${id}`)
+        .join(', ')}`;
     }
     case 'set_task_status': {
       const input = pa.payload as { task_id: number; status: 'todo' | 'in_progress' | 'done' };
