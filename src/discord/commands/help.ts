@@ -16,6 +16,7 @@ Slash commands:
 • \`/status\` — show link health
 • \`/projects\` — quick list (no AI)
 • \`/builds\` — show active Continuum agent builds
+• \`/branch task:<id>\` — attach an existing branch or create a new one for a task
 • \`/help\` — this message
 
 Or just DM me. Example phrases:

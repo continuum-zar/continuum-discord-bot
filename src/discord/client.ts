@@ -12,6 +12,7 @@ import { commands } from './commands/index.js';
 import { attachMessageHandler } from './handlers/messageHandler.js';
 import { attachButtonHandler } from './handlers/buttonHandler.js';
 import { attachSelectHandler } from './handlers/selectHandler.js';
+import { attachBranchHandler } from './handlers/branchHandler.js';
 
 export function buildClient(): Client {
   const client = new Client({
@@ -35,6 +36,7 @@ export function buildClient(): Client {
   attachMessageHandler(client);
   attachButtonHandler(client);
   attachSelectHandler(client);
+  attachBranchHandler(client);
 
   return client;
 }

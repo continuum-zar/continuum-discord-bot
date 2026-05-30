@@ -183,6 +183,12 @@ export interface Repository {
   default_branch?: string | null;
 }
 
+export interface BranchSummary {
+  name: string;
+  is_default?: boolean;
+  protected?: boolean;
+}
+
 export interface LinkBranchInput {
   linked_repo: string;
   linked_branch: string;
