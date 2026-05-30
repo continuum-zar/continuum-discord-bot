@@ -6,6 +6,7 @@ import {
   ChannelType,
   EmbedBuilder,
   Events,
+  StringSelectMenuBuilder,
 } from 'discord.js';
 import { logger } from '../../logger.js';
 import { loadConfig } from '../../config.js';
@@ -19,6 +20,9 @@ import { LinkExpiredError, NotLinkedError } from '../../auth/tokenManager.js';
 import { chunkMessage } from '../formatters.js';
 import { buildCustomIds } from './buttonHandler.js';
 import { attachMessage } from '../../db/pendingActions.js';
+import { listMilestones } from '../../tools/listMilestones.js';
+import type { Milestone } from '../../api/types.js';
+import { StringSelectMenuOptionBuilder } from 'discord.js';
 
 const config = loadConfig();
 const allowedGuilds = new Set(config.ALLOWED_GUILD_IDS);
@@ -71,21 +75,36 @@ async function handle(client: Client, message: Message): Promise<void> {
     await appendHistory(message.author.id, { role: 'assistant', content: result.reply });
 
     if (result.stagedPendingAction) {
-      const { id, preview } = result.stagedPendingAction;
+      const { id, action, preview } = result.stagedPendingAction;
       const ids = buildCustomIds(id);
       const embed = new EmbedBuilder()
         .setTitle('Confirm action')
         .setDescription(preview)
         .setFooter({ text: 'Expires in 5 minutes' });
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [];
+
+      if (action === 'create_task' && result.stagedPendingAction.projectId != null) {
+        const projectId = result.stagedPendingAction.projectId;
+        try {
+          const milestones = await listMilestones(message.author.id, projectId);
+          const selectRow = buildMilestoneSelectRow(ids.milestoneSelect, milestones);
+          if (selectRow) components.push(selectRow);
+        } catch (err) {
+          logger.warn({ err, projectId }, 'failed to load milestones for picker');
+        }
+      }
+
+      const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId(ids.confirm).setLabel('Confirm').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(ids.cancel).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
       );
+      components.push(buttonRow);
+
       const replyContent = result.reply.trim().length > 0 ? result.reply : undefined;
       const sent = await message.reply({
         content: replyContent,
         embeds: [embed],
-        components: [row],
+        components,
       });
       await attachMessage(id, sent.id, sent.channelId);
     } else {
@@ -106,6 +125,49 @@ async function handle(client: Client, message: Message): Promise<void> {
     logger.error({ err, userId: message.author.id }, 'message handler failed');
     await replyChunks(message, 'Something went wrong. Please try again.');
   }
+}
+
+const NO_MILESTONE_VALUE = 'none';
+const MILESTONE_OPTION_LIMIT = 24; // Discord allows 25 options; reserve one for "No milestone"
+
+function buildMilestoneSelectRow(
+  customId: string,
+  milestones: Milestone[],
+): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  const options: StringSelectMenuOptionBuilder[] = [
+    new StringSelectMenuOptionBuilder()
+      .setLabel('No milestone')
+      .setValue(NO_MILESTONE_VALUE)
+      .setDescription('Leave this task unassigned to any milestone')
+      .setDefault(true),
+  ];
+
+  for (const m of milestones.slice(0, MILESTONE_OPTION_LIMIT)) {
+    const label = m.name.length > 100 ? `${m.name.slice(0, 97)}…` : m.name;
+    const descParts: string[] = [];
+    if (m.status) descParts.push(m.status.replace('_', ' '));
+    if (m.due_date) descParts.push(`due ${m.due_date.slice(0, 10)}`);
+    const description = descParts.join(' · ').slice(0, 100);
+    const opt = new StringSelectMenuOptionBuilder()
+      .setLabel(label)
+      .setValue(String(m.id));
+    if (description) opt.setDescription(description);
+    options.push(opt);
+  }
+
+  if (options.length === 1) {
+    // Only the "No milestone" option — no point showing the picker.
+    return null;
+  }
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder('Pick a milestone (optional)')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(options);
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
 async function replyChunks(message: Message, text: string): Promise<void> {

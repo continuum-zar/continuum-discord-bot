@@ -11,6 +11,7 @@ import { logger } from '../logger.js';
 import { commands } from './commands/index.js';
 import { attachMessageHandler } from './handlers/messageHandler.js';
 import { attachButtonHandler } from './handlers/buttonHandler.js';
+import { attachSelectHandler } from './handlers/selectHandler.js';
 
 export function buildClient(): Client {
   const client = new Client({
@@ -33,12 +34,14 @@ export function buildClient(): Client {
 
   attachMessageHandler(client);
   attachButtonHandler(client);
+  attachSelectHandler(client);
 
   return client;
 }
 
 async function handleInteraction(interaction: Interaction): Promise<void> {
   if (interaction.isButton()) return; // handled by attachButtonHandler
+  if (interaction.isStringSelectMenu()) return; // handled by attachSelectHandler
   if (!interaction.isChatInputCommand()) return;
   const cmd = commands.get(interaction.commandName);
   if (!cmd) return;

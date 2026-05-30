@@ -20,14 +20,17 @@ import { LinkExpiredError, NotLinkedError } from '../../auth/tokenManager.js';
 
 const CONFIRM_PREFIX = 'pa:confirm:';
 const CANCEL_PREFIX = 'pa:cancel:';
+export const MILESTONE_SELECT_PREFIX = 'pa:milestone:';
 
 export function buildCustomIds(pendingActionId: string): {
   confirm: string;
   cancel: string;
+  milestoneSelect: string;
 } {
   return {
     confirm: `${CONFIRM_PREFIX}${pendingActionId}`,
     cancel: `${CANCEL_PREFIX}${pendingActionId}`,
+    milestoneSelect: `${MILESTONE_SELECT_PREFIX}${pendingActionId}`,
   };
 }
 

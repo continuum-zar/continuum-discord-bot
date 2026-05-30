@@ -5,13 +5,20 @@ import { getTask } from '../tools/getTask.js';
 import { projectSnapshot } from '../tools/projectSnapshot.js';
 import { projectQuery } from '../tools/projectQuery.js';
 import { resolveProject } from '../tools/resolveProject.js';
+import { listMilestones } from '../tools/listMilestones.js';
 import { createPendingAction } from '../db/pendingActions.js';
 import type { CreateTaskInput } from '../api/types.js';
 
 export interface ToolContext {
   discordUserId: string;
   /** When non-null, indicates the agent staged a pending action that needs UI confirmation. */
-  stagedPendingAction: { id: string; action: string; preview: string } | null;
+  stagedPendingAction: {
+    id: string;
+    action: string;
+    preview: string;
+    /** Present for create_task — used to render the milestone picker. */
+    projectId?: number;
+  } | null;
 }
 
 export interface ToolHandler {
@@ -39,6 +46,21 @@ function optStr(args: Record<string, unknown>, key: string): string | undefined 
 function optNum(args: Record<string, unknown>, key: string): number | undefined {
   const v = args[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
+export function buildCreateTaskPreview(payload: CreateTaskInput, milestoneName?: string | null): string {
+  const milestoneLine =
+    payload.milestone_id != null
+      ? `\n• Milestone: ${milestoneName ? `${milestoneName} (#${payload.milestone_id})` : `#${payload.milestone_id}`}`
+      : '\n• Milestone: _(none — pick one from the dropdown below)_';
+  return (
+    `**Create task** in project ${payload.project_id}\n` +
+    `• Title: ${payload.title}\n` +
+    `• Scope: ${payload.scope_weight}` +
+    (payload.description ? `\n• Description: ${payload.description}` : '') +
+    (payload.due_date ? `\n• Due: ${payload.due_date}` : '') +
+    milestoneLine
+  );
 }
 
 export const readTools: Record<string, ToolHandler> = {
@@ -144,6 +166,35 @@ export const readTools: Record<string, ToolHandler> = {
     handler: async (args, ctx) => projectSnapshot(ctx.discordUserId, num(args, 'project_id')),
   },
 
+  list_milestones: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'list_milestones',
+        description:
+          "List milestones for a project. Use this when the user wants to know what milestones exist, " +
+          "or before staging a create_task if you want to mention specific milestone names. " +
+          "Note: when create_task is staged, the user always sees a milestone dropdown in Discord, " +
+          "so you do NOT need to ask the user which milestone in chat — they'll pick from the gauge.",
+        parameters: {
+          type: 'object',
+          properties: { project_id: { type: 'number' } },
+          required: ['project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const milestones = await listMilestones(ctx.discordUserId, num(args, 'project_id'));
+      return milestones.map((m) => ({
+        id: m.id,
+        name: m.name,
+        status: m.status,
+        due_date: m.due_date,
+      }));
+    },
+  },
+
   project_query: {
     schema: {
       type: 'function',
@@ -186,6 +237,12 @@ export const writeTools: Record<string, ToolHandler> = {
             due_date: { type: 'string', description: 'ISO 8601 date (YYYY-MM-DD)' },
             assigned_to: { type: 'number' },
             labels: { type: 'array', items: { type: 'string' } },
+            milestone_id: {
+              type: 'number',
+              description:
+                'Optional. Usually leave unset — the user picks the milestone from a dropdown in Discord after staging. ' +
+                'Only pass this if the user explicitly named a specific milestone and you resolved it via list_milestones.',
+            },
           },
           required: ['project_id', 'title', 'scope_weight'],
           additionalProperties: false,
@@ -201,19 +258,22 @@ export const writeTools: Record<string, ToolHandler> = {
         ...(optStr(args, 'due_date') ? { due_date: optStr(args, 'due_date')! } : {}),
         ...(optNum(args, 'assigned_to') ? { assigned_to: optNum(args, 'assigned_to')! } : {}),
         ...(Array.isArray(args.labels) ? { labels: args.labels as string[] } : {}),
+        ...(optNum(args, 'milestone_id') !== undefined
+          ? { milestone_id: optNum(args, 'milestone_id')! }
+          : {}),
       };
       const pa = await createPendingAction({
         discordUserId: ctx.discordUserId,
         action: 'create_task',
         payload: payload as unknown as Record<string, unknown>,
       });
-      const preview =
-        `**Create task** in project ${payload.project_id}\n` +
-        `• Title: ${payload.title}\n` +
-        `• Scope: ${payload.scope_weight}` +
-        (payload.description ? `\n• Description: ${payload.description}` : '') +
-        (payload.due_date ? `\n• Due: ${payload.due_date}` : '');
-      ctx.stagedPendingAction = { id: pa.id, action: 'create_task', preview };
+      const preview = buildCreateTaskPreview(payload);
+      ctx.stagedPendingAction = {
+        id: pa.id,
+        action: 'create_task',
+        preview,
+        projectId: payload.project_id,
+      };
       return { pending_action_id: pa.id, preview };
     },
   },

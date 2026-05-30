@@ -112,4 +112,21 @@ export interface CreateTaskInput {
   due_date?: string;
   assigned_to?: number;
   labels?: string[];
+  milestone_id?: number | null;
+}
+
+export interface Milestone {
+  id: number;
+  project_id: number;
+  name: string;
+  status: 'not_started' | 'in_progress' | 'completed' | 'overdue';
+  due_date: string | null;
+  description?: string | null;
+}
+
+export interface MilestoneList {
+  data: Milestone[];
+  total: number;
+  skip: number;
+  limit: number;
 }

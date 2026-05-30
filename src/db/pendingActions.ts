@@ -55,6 +55,13 @@ export async function getPendingAction(id: string): Promise<PendingAction | null
   return row;
 }
 
+export async function updatePayload(
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await query('UPDATE pending_actions SET payload = $2 WHERE id = $1', [id, payload]);
+}
+
 export async function attachMessage(id: string, messageId: string, channelId: string): Promise<void> {
   await query(
     'UPDATE pending_actions SET message_id = $2, channel_id = $3 WHERE id = $1',
