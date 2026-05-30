@@ -1,0 +1,115 @@
+export interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  skip: number;
+  limit: number;
+}
+
+export interface Project {
+  id: number;
+  name: string;
+  description: string | null;
+  status: string;
+  progress: number;
+  start_date: string | null;
+  due_date: string | null;
+  team_size: number;
+  last_active: string;
+  member_role: string | null;
+  client_id: number | null;
+}
+
+export interface TaskSummary {
+  id: number;
+  title: string;
+  status: string;
+  project_id: number;
+  assigned_to: number | null;
+  due_date: string | null;
+  scope_weight: string | null;
+  milestone_id: number | null;
+  labels?: string[];
+}
+
+export interface ChecklistItem {
+  id?: string | null;
+  text: string;
+  done: boolean;
+}
+
+export interface CommentAuthor {
+  id: number;
+  display_name?: string | null;
+  username?: string | null;
+}
+
+export interface Comment {
+  id: number;
+  content: string;
+  author: CommentAuthor;
+  created_at: string;
+}
+
+export interface TaskBranch {
+  linked_repo: string;
+  linked_branch: string;
+  linked_branch_full_ref?: string | null;
+  identifier: string;
+}
+
+export interface TaskCursorMcpDetail {
+  id: number;
+  project_id: number;
+  title: string;
+  description: string | null;
+  checklists: ChecklistItem[];
+  branch: TaskBranch | null;
+  comments: Comment[];
+}
+
+export interface ProjectStatistics {
+  total_tasks: number;
+  total_completed_tasks: number;
+  total_in_progress_tasks: number;
+  total_todo_tasks: number;
+  total_overdue_tasks?: number;
+  total_logged_hours?: number;
+}
+
+export interface ProjectHealth {
+  score?: number;
+  status?: string;
+  summary?: string;
+  [key: string]: unknown;
+}
+
+export interface RiskItem {
+  category?: string;
+  severity?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export interface ProjectSnapshot {
+  stats: ProjectStatistics;
+  health: ProjectHealth;
+  risks: RiskItem[];
+  structural_commits?: unknown[];
+}
+
+export interface ProjectQueryResponse {
+  answer: string;
+  confidence?: number;
+  sources?: Array<{ task_id?: number; title?: string; snippet?: string }>;
+}
+
+export interface CreateTaskInput {
+  title: string;
+  project_id: number;
+  scope_weight: 'XS' | 'S' | 'M' | 'L' | 'XL';
+  description?: string;
+  status?: 'todo' | 'in_progress' | 'done';
+  due_date?: string;
+  assigned_to?: number;
+  labels?: string[];
+}
