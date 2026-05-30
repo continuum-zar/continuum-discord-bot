@@ -174,3 +174,71 @@ export interface ConfirmTasksResponse {
   created_count: number;
   task_ids: number[];
 }
+
+export interface Repository {
+  id: number;
+  name: string;
+  provider: string;
+  full_name?: string | null;
+  default_branch?: string | null;
+}
+
+export interface LinkBranchInput {
+  linked_repo: string;
+  linked_branch: string;
+  linked_branch_full_ref?: string;
+}
+
+export interface CreateBranchInput {
+  name: string;
+  from_ref?: string;
+}
+
+export interface CreateBranchResponse {
+  name: string;
+  ref?: string;
+  sha?: string;
+  created?: boolean;
+}
+
+export interface AttachLinkInput {
+  name: string;
+  url: string;
+}
+
+export interface AttachmentResponse {
+  id: number;
+  name: string;
+  url: string;
+}
+
+export type AgentRunMode = 'open_pr' | 'direct_push';
+
+export type AgentRunStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export interface StartBuildInput {
+  linked_repo: string;
+  linked_branch: string;
+  mode: AgentRunMode;
+  instructions?: string;
+}
+
+export interface AgentRun {
+  id: string;
+  task_id: number;
+  status: AgentRunStatus;
+  mode: AgentRunMode;
+  linked_repo: string;
+  linked_branch: string;
+  pr_url?: string | null;
+  commit_sha?: string | null;
+  summary?: string | null;
+  error?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

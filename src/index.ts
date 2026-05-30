@@ -7,6 +7,7 @@ import { buildClient, startClient } from './discord/client.js';
 import { buildApp } from './server/app.js';
 import { shutdownPool } from './db/pool.js';
 import { startCleanupCron } from './db/cleanupCron.js';
+import { startBuildWatcher } from './build/watcher.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -25,10 +26,12 @@ async function main(): Promise<void> {
   await startClient(client);
 
   const cleanup = startCleanupCron();
+  const buildWatcher = startBuildWatcher(client);
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'shutting down');
     cleanup.stop();
+    buildWatcher.stop();
     server.close();
     await client.destroy();
     await shutdownPool();

@@ -6,8 +6,13 @@ import { projectSnapshot } from '../tools/projectSnapshot.js';
 import { projectQuery } from '../tools/projectQuery.js';
 import { resolveProject } from '../tools/resolveProject.js';
 import { listMilestones } from '../tools/listMilestones.js';
+import { listRepositories } from '../tools/listRepositories.js';
 import { createPendingAction } from '../db/pendingActions.js';
-import type { CreateTaskInput, GeneratedTask } from '../api/types.js';
+import type {
+  AgentRunMode,
+  CreateTaskInput,
+  GeneratedTask,
+} from '../api/types.js';
 import { generateDraftTasks } from '../tools/draftTasks.js';
 
 export interface ToolContext {
@@ -60,6 +65,37 @@ export interface DraftTaskPayload {
   source_files_used: string[];
   confidence: number;
   milestone_id?: number | null;
+}
+
+export interface LinkBranchPayload {
+  task_id: number;
+  linked_repo: string;
+  linked_branch: string;
+  linked_branch_full_ref?: string;
+}
+
+export interface CreateAndLinkBranchPayload {
+  task_id: number;
+  project_id: number;
+  repository_id: number;
+  repository_name?: string;
+  branch_name: string;
+  from_ref?: string;
+  linked_repo: string;
+}
+
+export interface AttachLinkPayload {
+  task_id: number;
+  name: string;
+  url: string;
+}
+
+export interface StartBuildPayload {
+  task_id: number;
+  linked_repo: string;
+  linked_branch: string;
+  instructions?: string;
+  mode?: AgentRunMode;
 }
 
 export function buildDraftTaskPreview(
@@ -257,6 +293,35 @@ export const readTools: Record<string, ToolHandler> = {
         name: m.name,
         status: m.status,
         due_date: m.due_date,
+      }));
+    },
+  },
+
+  list_repositories: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'list_repositories',
+        description:
+          'List Git repositories linked to a project. Use this before create_and_link_branch ' +
+          'when the user references a repo by name and you need its id, or when the project may ' +
+          'have multiple repos and you need to disambiguate. Returns id, name, provider, full_name.',
+        parameters: {
+          type: 'object',
+          properties: { project_id: { type: 'number' } },
+          required: ['project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const repos = await listRepositories(ctx.discordUserId, num(args, 'project_id'));
+      return repos.map((r) => ({
+        id: r.id,
+        name: r.name,
+        provider: r.provider,
+        full_name: r.full_name ?? null,
+        default_branch: r.default_branch ?? null,
       }));
     },
   },
@@ -495,6 +560,221 @@ export const writeTools: Record<string, ToolHandler> = {
         : payload.content;
       const preview = `**Add comment** to task #${payload.task_id}\n> ${trimmed}`;
       ctx.stagedPendingAction = { id: pa.id, action: 'add_comment', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  link_branch: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'link_branch',
+        description:
+          'Stage linking an EXISTING Git branch to a task. Use when the branch already exists ' +
+          'on the remote. Does NOT execute — user must tap Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            linked_repo: {
+              type: 'string',
+              description: 'Repo identifier, e.g. "myorg/acme-app".',
+            },
+            linked_branch: { type: 'string', description: 'Branch name, e.g. "feature/foo".' },
+          },
+          required: ['task_id', 'linked_repo', 'linked_branch'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: LinkBranchPayload = {
+        task_id: num(args, 'task_id'),
+        linked_repo: str(args, 'linked_repo'),
+        linked_branch: str(args, 'linked_branch'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'link_branch',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview =
+        `**Link branch** to task #${payload.task_id}\n` +
+        `• Repo: \`${payload.linked_repo}\`\n` +
+        `• Branch: \`${payload.linked_branch}\``;
+      ctx.stagedPendingAction = { id: pa.id, action: 'link_branch', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  create_and_link_branch: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'create_and_link_branch',
+        description:
+          'Stage CREATE a new Git branch on the remote AND link it to the task in one confirm. ' +
+          'Use when the user wants a fresh branch for the task. If the project has multiple ' +
+          'repos, call list_repositories first to resolve repository_id. Does NOT execute — ' +
+          'user must tap Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            project_id: { type: 'number' },
+            repository_id: { type: 'number' },
+            repository_name: {
+              type: 'string',
+              description: 'Display name for the preview (e.g. "myorg/acme-app").',
+            },
+            branch_name: { type: 'string', description: 'New branch to create.' },
+            from_ref: {
+              type: 'string',
+              description: 'Base branch or ref. Defaults to repo default (e.g. main) if omitted.',
+            },
+            linked_repo: {
+              type: 'string',
+              description:
+                'Repo identifier stored on the task. Usually matches repository_name (e.g. "myorg/acme-app").',
+            },
+          },
+          required: [
+            'task_id',
+            'project_id',
+            'repository_id',
+            'branch_name',
+            'linked_repo',
+          ],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: CreateAndLinkBranchPayload = {
+        task_id: num(args, 'task_id'),
+        project_id: num(args, 'project_id'),
+        repository_id: num(args, 'repository_id'),
+        branch_name: str(args, 'branch_name'),
+        linked_repo: str(args, 'linked_repo'),
+        ...(optStr(args, 'repository_name')
+          ? { repository_name: optStr(args, 'repository_name')! }
+          : {}),
+        ...(optStr(args, 'from_ref') ? { from_ref: optStr(args, 'from_ref')! } : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'create_and_link_branch',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const repoLabel = payload.repository_name ?? payload.linked_repo;
+      const preview =
+        `**Create + link branch** for task #${payload.task_id}\n` +
+        `• Repo: \`${repoLabel}\`\n` +
+        `• New branch: \`${payload.branch_name}\`` +
+        (payload.from_ref ? ` (from \`${payload.from_ref}\`)` : ' (from default)');
+      ctx.stagedPendingAction = { id: pa.id, action: 'create_and_link_branch', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  attach_link: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'attach_link',
+        description:
+          'Stage attaching a URL (http/https only) to a task as a named link. Does NOT execute — ' +
+          'user must tap Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            name: { type: 'string', minLength: 1, maxLength: 200 },
+            url: { type: 'string', description: 'Must start with http:// or https://' },
+          },
+          required: ['task_id', 'name', 'url'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const url = str(args, 'url');
+      if (!/^https?:\/\//i.test(url)) {
+        return { error: 'URL must start with http:// or https://' };
+      }
+      const payload: AttachLinkPayload = {
+        task_id: num(args, 'task_id'),
+        name: str(args, 'name'),
+        url,
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'attach_link',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview =
+        `**Attach link** to task #${payload.task_id}\n` +
+        `• Name: ${payload.name}\n` +
+        `• URL: ${payload.url}`;
+      ctx.stagedPendingAction = { id: pa.id, action: 'attach_link', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  stage_build: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'stage_build',
+        description:
+          'Stage a Continuum agent build for a task. The user picks mode (Open PR vs Direct push) ' +
+          'via Discord buttons, then Confirms — only then does the build start. Prerequisites: ' +
+          'task must have a linked branch matching (linked_repo, linked_branch); if not, link one ' +
+          'first via link_branch / create_and_link_branch. If the task has multiple linked ' +
+          "branches, disambiguate in chat before calling — don't guess. Does NOT include mode " +
+          "(it's chosen via UI buttons after staging).",
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            linked_repo: { type: 'string' },
+            linked_branch: { type: 'string' },
+            instructions: {
+              type: 'string',
+              description:
+                'Optional extra instructions for the build agent (e.g. acceptance criteria).',
+              maxLength: 4000,
+            },
+          },
+          required: ['task_id', 'linked_repo', 'linked_branch'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: StartBuildPayload = {
+        task_id: num(args, 'task_id'),
+        linked_repo: str(args, 'linked_repo'),
+        linked_branch: str(args, 'linked_branch'),
+        ...(optStr(args, 'instructions')
+          ? { instructions: optStr(args, 'instructions')! }
+          : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'start_build',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const instructionsLine = payload.instructions
+        ? `\n• Instructions: ${truncate(payload.instructions, 240)}`
+        : '';
+      const preview =
+        `**Build task #${payload.task_id}**\n` +
+        `• Repo: \`${payload.linked_repo}\`\n` +
+        `• Branch: \`${payload.linked_branch}\`` +
+        instructionsLine +
+        `\n\nChoose **Open PR** or **Direct push** below, then Confirm.`;
+      ctx.stagedPendingAction = { id: pa.id, action: 'start_build', preview };
       return { pending_action_id: pa.id, preview };
     },
   },

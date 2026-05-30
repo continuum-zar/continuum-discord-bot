@@ -97,10 +97,34 @@ async function handle(client: Client, message: Message): Promise<void> {
         }
       }
 
-      const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId(ids.confirm).setLabel('Confirm').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(ids.cancel).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
-      );
+      let buttonRow: ActionRowBuilder<ButtonBuilder>;
+      if (action === 'start_build') {
+        buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(ids.modeOpenPr)
+            .setLabel('Open PR')
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(ids.modeDirectPush)
+            .setLabel('Direct push')
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId(ids.cancel)
+            .setLabel('Cancel')
+            .setStyle(ButtonStyle.Secondary),
+        );
+      } else {
+        buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(ids.confirm)
+            .setLabel('Confirm')
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(ids.cancel)
+            .setLabel('Cancel')
+            .setStyle(ButtonStyle.Secondary),
+        );
+      }
       components.push(buttonRow);
 
       const replyContent = result.reply.trim().length > 0 ? result.reply : undefined;

@@ -11,6 +11,7 @@ import * as link from './link.js';
 import * as unlink from './unlink.js';
 import * as status from './status.js';
 import * as projects from './projects.js';
+import * as builds from './builds.js';
 import * as help from './help.js';
 import { loadConfig } from '../../config.js';
 import { logger } from '../../logger.js';
@@ -20,7 +21,7 @@ type CommandModule = {
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
 };
 
-const modules: CommandModule[] = [link, unlink, status, projects, help];
+const modules: CommandModule[] = [link, unlink, status, projects, builds, help];
 
 export const commands = new Collection<string, CommandModule>(
   modules.map((m) => [m.data.name, m]),

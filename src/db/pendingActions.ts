@@ -5,7 +5,11 @@ export type PendingActionKind =
   | 'create_task'
   | 'draft_task'
   | 'set_task_status'
-  | 'add_comment';
+  | 'add_comment'
+  | 'link_branch'
+  | 'create_and_link_branch'
+  | 'attach_link'
+  | 'start_build';
 
 export interface PendingAction {
   id: string;

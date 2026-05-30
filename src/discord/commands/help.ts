@@ -15,6 +15,7 @@ Slash commands:
 • \`/unlink\` — disconnect
 • \`/status\` — show link health
 • \`/projects\` — quick list (no AI)
+• \`/builds\` — show active Continuum agent builds
 • \`/help\` — this message
 
 Or just DM me. Example phrases:
@@ -25,6 +26,9 @@ Or just DM me. Example phrases:
 > Create a security review task in Acme App, scope M
 > Mark task 142 as done
 > Add a comment to task 87: "blocked on legal"
+> Create branch task-42-fix from main on myorg/acme-app and link to task 42
+> Attach https://figma.com/file/... to task 42 as Design
+> Build task 42
 
 Write actions need explicit Confirm/Cancel before they execute.`;
 
