@@ -9,7 +9,8 @@ export type PendingActionKind =
   | 'link_branch'
   | 'create_and_link_branch'
   | 'attach_link'
-  | 'start_build';
+  | 'start_build'
+  | 'start_review';
 
 export interface PendingAction {
   id: string;

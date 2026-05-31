@@ -98,6 +98,11 @@ export interface StartBuildPayload {
   mode?: AgentRunMode;
 }
 
+export interface StartReviewPayload {
+  task_id: number;
+  run_id: string;
+}
+
 export function buildDraftTaskPreview(
   payload: DraftTaskPayload,
   milestoneName?: string | null,
@@ -775,6 +780,50 @@ export const writeTools: Record<string, ToolHandler> = {
         instructionsLine +
         `\n\nChoose **Open PR** or **Direct push** below, then Confirm.`;
       ctx.stagedPendingAction = { id: pa.id, action: 'start_build', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  stage_review: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'stage_review',
+        description:
+          'Stage a Continuum automated review of a previous build run. The user ' +
+          'Confirms via a Discord button, then a review starts that compares the ' +
+          "build's diff against the task's requirements and posts a verdict. " +
+          'Requires the build run_id; if the user just says "review the last build", ' +
+          "ask them to specify the run_id or task — don't guess.",
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            run_id: {
+              type: 'string',
+              description: 'The agent build run ID (UUID) to review.',
+            },
+          },
+          required: ['task_id', 'run_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: StartReviewPayload = {
+        task_id: num(args, 'task_id'),
+        run_id: str(args, 'run_id'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'start_review',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview =
+        `**Review build \`${payload.run_id.slice(0, 8)}\`** for task #${payload.task_id}\n` +
+        `I'll compare the diff against the task's requirements and post a verdict ` +
+        `(PR comment for Open-PR builds, task comment for Direct-push builds).`;
+      ctx.stagedPendingAction = { id: pa.id, action: 'start_review', preview };
       return { pending_action_id: pa.id, preview };
     },
   },

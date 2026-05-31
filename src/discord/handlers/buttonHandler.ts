@@ -37,6 +37,7 @@ import type {
   DraftTaskPayload,
   LinkBranchPayload,
   StartBuildPayload,
+  StartReviewPayload,
 } from '../../agent/tools.js';
 import { ContinuumApiError } from '../../api/continuumClient.js';
 import { LinkExpiredError, NotLinkedError } from '../../auth/tokenManager.js';
@@ -409,6 +410,27 @@ async function executeAction(
             8,
           )}\`. I'll DM you when it finishes.`,
         components: [cancelRow],
+      };
+    }
+    case 'start_review': {
+      const payload = pa.payload as unknown as StartReviewPayload;
+      const review = await executeStartReview(
+        pa.discord_user_id,
+        payload.task_id,
+        payload.run_id,
+      );
+      await createReviewWatcher({
+        reviewId: review.id,
+        buildRunId: payload.run_id,
+        taskId: payload.task_id,
+        discordUserId: pa.discord_user_id,
+        channelId: interaction.channelId ?? '',
+        messageId: interaction.message?.id ?? null,
+      });
+      return {
+        content:
+          `🔎 Review started for build \`${payload.run_id.slice(0, 8)}\` ` +
+          `(task **#${payload.task_id}**). I'll DM you the verdict.`,
       };
     }
     default:
