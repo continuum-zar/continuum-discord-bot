@@ -26,6 +26,7 @@ import {
   getActiveSession,
 } from '../tools/workSessions.js';
 import { normalizeLoggedHourDate } from '../tools/logTime.js';
+import { listProjectMembers, memberDisplayName } from '../tools/projectMembers.js';
 
 export type PickerKind = 'milestone' | 'assignee' | 'member_role';
 
@@ -715,6 +716,33 @@ export const readTools: Record<string, ToolHandler> = {
       },
     },
     handler: async (_args, ctx) => listPendingInvitations(ctx.discordUserId),
+  },
+
+  list_project_members: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'list_project_members',
+        description:
+          'List members of a project (id, user_id, role, display name/email). Use before staging assign_task or remove_member.',
+        parameters: {
+          type: 'object',
+          properties: { project_id: { type: 'number' } },
+          required: ['project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const members = await listProjectMembers(ctx.discordUserId, num(args, 'project_id'));
+      return members.map((m) => ({
+        id: m.id,
+        user_id: m.user_id,
+        role: m.role,
+        display_name: memberDisplayName(m),
+        email: m.user?.email ?? null,
+      }));
+    },
   },
 };
 
@@ -1580,6 +1608,255 @@ export const writeTools: Record<string, ToolHandler> = {
       });
       const preview = buildDeclineInvitationPreview(payload);
       ctx.stagedPendingAction = { id: pa.id, action: 'decline_invitation', preview, ui: { destructive: true } };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  assign_task: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'assign_task',
+        description:
+          'Stage assigning a task to a project member (PM/admin only). Discord shows an assignee dropdown populated ' +
+          "from project members. Do NOT pass user_ids — the user picks. Stage with task_id and project_id. " +
+          'User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            project_id: { type: 'number' },
+          },
+          required: ['task_id', 'project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: AssignTaskPayload = {
+        task_id: num(args, 'task_id'),
+        project_id: num(args, 'project_id'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'assign_task',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildAssignTaskPreview(payload);
+      ctx.stagedPendingAction = {
+        id: pa.id,
+        action: 'assign_task',
+        preview,
+        ui: {
+          projectId: payload.project_id,
+          pickers: [{ kind: 'assignee', projectId: payload.project_id }],
+        },
+      };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  create_milestone: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'create_milestone',
+        description:
+          'Stage creating a new milestone in a project (PM/admin only). due_date must be today or in the future. User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            project_name: { type: 'string' },
+            name: { type: 'string', minLength: 1, maxLength: 255 },
+            due_date: { type: 'string', description: 'ISO date YYYY-MM-DD (or full datetime).' },
+            description: { type: 'string', maxLength: 2000 },
+          },
+          required: ['project_id', 'name'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: CreateMilestonePayload = {
+        project_id: num(args, 'project_id'),
+        ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
+        name: str(args, 'name'),
+        ...(optStr(args, 'due_date') ? { due_date: optStr(args, 'due_date')! } : {}),
+        ...(optStr(args, 'description') ? { description: optStr(args, 'description')! } : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'create_milestone',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildCreateMilestonePreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'create_milestone', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  update_milestone: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'update_milestone',
+        description:
+          'Stage edits to a milestone (PM/admin only). Provide at least one of name/due_date/description. User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            milestone_id: { type: 'number' },
+            milestone_name: { type: 'string', description: 'For preview only.' },
+            name: { type: 'string', minLength: 1, maxLength: 255 },
+            due_date: { type: 'string' },
+            description: { type: 'string', maxLength: 2000 },
+          },
+          required: ['milestone_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const updates: UpdateMilestonePayload['updates'] = {};
+      if (optStr(args, 'name') != null) updates.name = optStr(args, 'name')!;
+      if (optStr(args, 'due_date') != null) updates.due_date = optStr(args, 'due_date')!;
+      if (optStr(args, 'description') != null) updates.description = optStr(args, 'description')!;
+      if (Object.keys(updates).length === 0) {
+        return { error: 'No fields to update — pass at least one of name/due_date/description.' };
+      }
+      const payload: UpdateMilestonePayload = {
+        milestone_id: num(args, 'milestone_id'),
+        ...(optStr(args, 'milestone_name') ? { milestone_name: optStr(args, 'milestone_name')! } : {}),
+        updates,
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'update_milestone',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildUpdateMilestonePreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'update_milestone', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  delete_milestone: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'delete_milestone',
+        description: 'Stage permanent deletion of a milestone (PM/admin only). Destructive. User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            milestone_id: { type: 'number' },
+            milestone_name: { type: 'string' },
+          },
+          required: ['milestone_id', 'milestone_name'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: DeleteMilestonePayload = {
+        milestone_id: num(args, 'milestone_id'),
+        milestone_name: str(args, 'milestone_name'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'delete_milestone',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildDeleteMilestonePreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'delete_milestone', preview, ui: { destructive: true } };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  invite_member: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'invite_member',
+        description:
+          'Stage inviting a user to a project by email (PM/admin only). Role defaults to developer; Discord shows a role ' +
+          'dropdown (client/developer/project_manager) so the user can change it before Confirming.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            project_name: { type: 'string' },
+            email: { type: 'string', description: 'Invitee email address.' },
+            role: { type: 'string', enum: ['client', 'developer', 'project_manager'] },
+          },
+          required: ['project_id', 'email'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const role = (optStr(args, 'role') as ProjectMemberRole | undefined) ?? 'developer';
+      const payload: InviteMemberPayload = {
+        project_id: num(args, 'project_id'),
+        ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
+        email: str(args, 'email'),
+        role,
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'invite_member',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildInviteMemberPreview(payload);
+      ctx.stagedPendingAction = {
+        id: pa.id,
+        action: 'invite_member',
+        preview,
+        ui: {
+          projectId: payload.project_id,
+          pickers: [{ kind: 'member_role', projectId: payload.project_id }],
+        },
+      };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  remove_member: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'remove_member',
+        description:
+          'Stage removing a member from a project (PM/admin only). Destructive. ' +
+          'Call list_project_members first to find user_id and display name.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            project_name: { type: 'string' },
+            user_id: { type: 'number' },
+            member_name: { type: 'string' },
+          },
+          required: ['project_id', 'user_id', 'member_name'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: RemoveMemberPayload = {
+        project_id: num(args, 'project_id'),
+        ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
+        user_id: num(args, 'user_id'),
+        member_name: str(args, 'member_name'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'remove_member',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildRemoveMemberPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'remove_member', preview, ui: { destructive: true } };
       return { pending_action_id: pa.id, preview };
     },
   },
