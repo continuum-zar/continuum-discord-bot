@@ -47,7 +47,6 @@ const CANCEL_PREFIX = 'pa:cancel:';
 const MODE_PREFIX = 'pa:mode:';
 const CANCEL_BUILD_PREFIX = 'pa:cancelbuild:';
 const REVIEW_PREFIX = 'pa:review:';
-export const MILESTONE_SELECT_PREFIX = 'pa:milestone:';
 
 export function buildReviewCustomId(taskId: number, runId: string): string {
   return `${REVIEW_PREFIX}${taskId}:${runId}`;
@@ -56,14 +55,12 @@ export function buildReviewCustomId(taskId: number, runId: string): string {
 export function buildCustomIds(pendingActionId: string): {
   confirm: string;
   cancel: string;
-  milestoneSelect: string;
   modeOpenPr: string;
   modeDirectPush: string;
 } {
   return {
     confirm: `${CONFIRM_PREFIX}${pendingActionId}`,
     cancel: `${CANCEL_PREFIX}${pendingActionId}`,
-    milestoneSelect: `${MILESTONE_SELECT_PREFIX}${pendingActionId}`,
     modeOpenPr: `${MODE_PREFIX}open_pr:${pendingActionId}`,
     modeDirectPush: `${MODE_PREFIX}direct_push:${pendingActionId}`,
   };
