@@ -39,6 +39,9 @@ function mapContinuumApiError(err: ContinuumApiError, ctx: MapApiErrorContext): 
       if (body.includes('milestone') && body.includes('different project')) {
         return { user: "That milestone belongs to a different project.", status: 400 };
       }
+      if (body.includes('task') && body.includes('does not belong')) {
+        return { user: 'That task belongs to a different project than the one specified.', status: 400 };
+      }
       return { user: trimmed ? `Validation error: ${trimmed}` : 'Validation error.', status: 400 };
     }
     case 403: {

@@ -53,7 +53,8 @@ Invitations:
 - Decline is destructive (red Confirm).
 
 Time logging & work sessions:
-- log_time requires project_id, description, and either hours or duration_minutes; date defaults to today.
+- log_time requires description and either hours or duration_minutes; date defaults to today. When logging against a task, pass task_id — the project is resolved from the task automatically, so project_id is not needed (and is overridden if given). Otherwise pass project_id.
+- start_work_session: when starting on a task, pass task_id — the project is resolved from the task automatically. Otherwise pass project_id.
 - pause/resume/stop work session tools auto-resolve the active session via GET /work-sessions/active. If there is none, they return { no_active_session: true } — tell the user there's nothing to act on.
 
 Branches:

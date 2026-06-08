@@ -1321,12 +1321,13 @@ export const writeTools: Record<string, ToolHandler> = {
       function: {
         name: 'log_time',
         description:
-          'Stage a time-log entry (any project member). Requires project_id, description, and one of `hours` or `duration_minutes`. ' +
-          'Optional: task_id, date (defaults to today). User must Confirm.',
+          'Stage a time-log entry (any project member). Pass `task_id` when logging against a task — the project is ' +
+          'resolved from the task automatically, so `project_id` is optional in that case. Otherwise pass `project_id`. ' +
+          'Requires description and one of `hours` or `duration_minutes`. Optional: date (defaults to today). User must Confirm.',
         parameters: {
           type: 'object',
           properties: {
-            project_id: { type: 'number' },
+            project_id: { type: 'number', description: 'Optional when task_id is provided; resolved from the task.' },
             project_name: { type: 'string', description: 'For preview only.' },
             task_id: { type: 'number' },
             task_title: { type: 'string', description: 'For preview only.' },
@@ -1335,7 +1336,7 @@ export const writeTools: Record<string, ToolHandler> = {
             description: { type: 'string', minLength: 1, maxLength: 1000 },
             date: { type: 'string', description: 'ISO date YYYY-MM-DD. Defaults to today.' },
           },
-          required: ['project_id', 'description'],
+          required: ['description'],
           additionalProperties: false,
         },
       },
@@ -1346,11 +1347,22 @@ export const writeTools: Record<string, ToolHandler> = {
       if (hours == null && durationMinutes == null) {
         return { error: 'Pass either hours or duration_minutes.' };
       }
+      const taskId = optNum(args, 'task_id');
+      let projectId = optNum(args, 'project_id');
+      let taskTitle = optStr(args, 'task_title');
+      if (taskId == null && projectId == null) {
+        return { error: 'Pass project_id or task_id.' };
+      }
+      if (taskId != null) {
+        const task = await getTask(ctx.discordUserId, taskId);
+        projectId = task.project_id;
+        if (!taskTitle) taskTitle = task.title;
+      }
       const payload: LogTimePayload = {
-        project_id: num(args, 'project_id'),
+        project_id: projectId!,
         ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
-        ...(optNum(args, 'task_id') != null ? { task_id: optNum(args, 'task_id')! } : {}),
-        ...(optStr(args, 'task_title') ? { task_title: optStr(args, 'task_title')! } : {}),
+        ...(taskId != null ? { task_id: taskId } : {}),
+        ...(taskTitle ? { task_title: taskTitle } : {}),
         ...(hours != null ? { hours } : {}),
         ...(durationMinutes != null ? { duration_minutes: durationMinutes } : {}),
         description: str(args, 'description'),
@@ -1373,28 +1385,40 @@ export const writeTools: Record<string, ToolHandler> = {
       function: {
         name: 'start_work_session',
         description:
-          'Stage starting a new work session (clocks the user in to a project, optionally a task). The user must Confirm. ' +
+          'Stage starting a new work session (clocks the user in to a project, optionally a task). Pass `task_id` when ' +
+          'starting on a task — the project is resolved from the task automatically, so `project_id` is optional in that case. ' +
+          'Otherwise pass `project_id`. The user must Confirm. ' +
           'If they already have an active session, the API may reject — call get_active_session first if unsure.',
         parameters: {
           type: 'object',
           properties: {
-            project_id: { type: 'number' },
+            project_id: { type: 'number', description: 'Optional when task_id is provided; resolved from the task.' },
             project_name: { type: 'string', description: 'For preview only.' },
             task_id: { type: 'number' },
             task_title: { type: 'string', description: 'For preview only.' },
             note: { type: 'string', maxLength: 500 },
           },
-          required: ['project_id'],
           additionalProperties: false,
         },
       },
     },
     handler: async (args, ctx) => {
+      const taskId = optNum(args, 'task_id');
+      let projectId = optNum(args, 'project_id');
+      let taskTitle = optStr(args, 'task_title');
+      if (taskId == null && projectId == null) {
+        return { error: 'Pass project_id or task_id.' };
+      }
+      if (taskId != null) {
+        const task = await getTask(ctx.discordUserId, taskId);
+        projectId = task.project_id;
+        if (!taskTitle) taskTitle = task.title;
+      }
       const payload: StartWorkSessionPayload = {
-        project_id: num(args, 'project_id'),
+        project_id: projectId!,
         ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
-        ...(optNum(args, 'task_id') != null ? { task_id: optNum(args, 'task_id')! } : {}),
-        ...(optStr(args, 'task_title') ? { task_title: optStr(args, 'task_title')! } : {}),
+        ...(taskId != null ? { task_id: taskId } : {}),
+        ...(taskTitle ? { task_title: taskTitle } : {}),
         ...(optStr(args, 'note') ? { note: optStr(args, 'note')! } : {}),
       };
       const pa = await createPendingAction({
