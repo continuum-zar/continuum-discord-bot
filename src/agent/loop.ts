@@ -5,9 +5,10 @@ import type {
 } from 'openai/resources/chat/completions.js';
 import { loadConfig } from '../config.js';
 import { logger } from '../logger.js';
-import { SYSTEM_PROMPT } from './systemPrompt.js';
+import { buildSystemPrompt } from './systemPrompt.js';
 import { allTools, type ToolContext } from './tools.js';
 import { ContinuumApiError } from '../api/continuumClient.js';
+import { getUserContext } from '../tools/getUserContext.js';
 
 const config = loadConfig();
 const openai = new OpenAI({ apiKey: config.OPENAI_API_KEY });
@@ -28,8 +29,15 @@ export async function runAgent(opts: {
   const toolSchemas: ChatCompletionTool[] = Object.values(tools).map((t) => t.schema);
   const ctx: ToolContext = { discordUserId: opts.discordUserId, stagedPendingAction: null };
 
+  let userContext = null;
+  try {
+    userContext = await getUserContext(opts.discordUserId);
+  } catch (err) {
+    logger.warn({ err, discordUserId: opts.discordUserId }, 'getUserContext failed; falling back to static prompt');
+  }
+
   const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: buildSystemPrompt(userContext) },
     ...opts.history,
     { role: 'user', content: opts.userMessage },
   ];
