@@ -8,6 +8,7 @@ import { resolveProject } from '../tools/resolveProject.js';
 import { listMilestones } from '../tools/listMilestones.js';
 import { listRepositories } from '../tools/listRepositories.js';
 import { createPendingAction } from '../db/pendingActions.js';
+import { ContinuumApiError } from '../api/continuumClient.js';
 import type {
   AgentRunMode,
   CreateTaskInput,
@@ -854,7 +855,19 @@ export const writeTools: Record<string, ToolHandler> = {
       const maxRaw = optNum(args, 'max_tasks');
       const maxTasks = Math.max(1, Math.min(5, maxRaw ?? 1));
 
-      const gen = await generateDraftTasks(ctx.discordUserId, projectId, prompt, maxTasks);
+      let gen;
+      try {
+        gen = await generateDraftTasks(ctx.discordUserId, projectId, prompt, maxTasks);
+      } catch (err) {
+        if (err instanceof ContinuumApiError && (err.status === 404 || err.status === 403)) {
+          return {
+            error:
+              `project_id ${projectId} did not resolve (HTTP ${err.status}). Do NOT guess — ` +
+              'call resolve_project with the project name from the user, then retry draft_task with the returned id.',
+          };
+        }
+        throw err;
+      }
 
       if (!gen.tasks || gen.tasks.length === 0) {
         // The assistant returned a clarification or no-results reply.
