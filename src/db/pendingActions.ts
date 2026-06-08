@@ -10,7 +10,24 @@ export type PendingActionKind =
   | 'create_and_link_branch'
   | 'attach_link'
   | 'start_build'
-  | 'start_review';
+  | 'start_review'
+  | 'update_task'
+  | 'delete_task'
+  | 'link_task_milestone'
+  | 'log_time'
+  | 'start_work_session'
+  | 'pause_work_session'
+  | 'resume_work_session'
+  | 'stop_work_session'
+  | 'submit_issue_report'
+  | 'accept_invitation'
+  | 'decline_invitation'
+  | 'assign_task'
+  | 'create_milestone'
+  | 'update_milestone'
+  | 'delete_milestone'
+  | 'invite_member'
+  | 'remove_member';
 
 export interface PendingAction {
   id: string;

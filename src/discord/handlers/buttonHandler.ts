@@ -25,6 +25,31 @@ import { executeAttachLink } from '../../tools/attachLink.js';
 import { executeCreateGitBranch } from '../../tools/createGitBranch.js';
 import { executeStartBuild, cancelAgentRun } from '../../tools/startBuild.js';
 import { executeStartReview } from '../../tools/startReview.js';
+import { executeUpdateTask, executeDeleteTask } from '../../tools/updateTask.js';
+import { executeLinkTaskMilestone } from '../../tools/linkTaskMilestone.js';
+import { executeLogTime } from '../../tools/logTime.js';
+import {
+  executeStartWorkSession,
+  executePauseWorkSession,
+  executeResumeWorkSession,
+  executeStopWorkSession,
+  formatDuration,
+} from '../../tools/workSessions.js';
+import { executeSubmitIssueReport } from '../../tools/submitIssueReport.js';
+import {
+  executeAcceptInvitation,
+  executeDeclineInvitation,
+} from '../../tools/invitations.js';
+import { executeAssignTask } from '../../tools/assignTask.js';
+import {
+  executeCreateMilestone,
+  executeUpdateMilestone,
+  executeDeleteMilestone,
+} from '../../tools/milestones.js';
+import {
+  executeInviteMember,
+  executeRemoveMember,
+} from '../../tools/projectMembers.js';
 import { createWatcher, deleteWatcher } from '../../db/buildWatchers.js';
 import { createReviewWatcher } from '../../db/reviewWatchers.js';
 import type {
@@ -32,22 +57,37 @@ import type {
   CreateTaskInput,
 } from '../../api/types.js';
 import type {
+  AssignTaskPayload,
   AttachLinkPayload,
   CreateAndLinkBranchPayload,
+  CreateMilestonePayload,
+  DeleteMilestonePayload,
+  DeleteTaskPayload,
   DraftTaskPayload,
+  InvitationPayload,
+  InviteMemberPayload,
   LinkBranchPayload,
+  LinkTaskMilestonePayload,
+  LogTimePayload,
+  PauseWorkSessionPayload,
+  RemoveMemberPayload,
+  ResumeWorkSessionPayload,
   StartBuildPayload,
   StartReviewPayload,
+  StartWorkSessionPayload,
+  StopWorkSessionPayload,
+  SubmitIssueReportPayload,
+  UpdateMilestonePayload,
+  UpdateTaskPayload,
 } from '../../agent/tools.js';
 import { ContinuumApiError } from '../../api/continuumClient.js';
-import { LinkExpiredError, NotLinkedError } from '../../auth/tokenManager.js';
+import { mapApiError } from '../../api/mapApiError.js';
 
 const CONFIRM_PREFIX = 'pa:confirm:';
 const CANCEL_PREFIX = 'pa:cancel:';
 const MODE_PREFIX = 'pa:mode:';
 const CANCEL_BUILD_PREFIX = 'pa:cancelbuild:';
 const REVIEW_PREFIX = 'pa:review:';
-export const MILESTONE_SELECT_PREFIX = 'pa:milestone:';
 
 export function buildReviewCustomId(taskId: number, runId: string): string {
   return `${REVIEW_PREFIX}${taskId}:${runId}`;
@@ -56,14 +96,12 @@ export function buildReviewCustomId(taskId: number, runId: string): string {
 export function buildCustomIds(pendingActionId: string): {
   confirm: string;
   cancel: string;
-  milestoneSelect: string;
   modeOpenPr: string;
   modeDirectPush: string;
 } {
   return {
     confirm: `${CONFIRM_PREFIX}${pendingActionId}`,
     cancel: `${CANCEL_PREFIX}${pendingActionId}`,
-    milestoneSelect: `${MILESTONE_SELECT_PREFIX}${pendingActionId}`,
     modeOpenPr: `${MODE_PREFIX}open_pr:${pendingActionId}`,
     modeDirectPush: `${MODE_PREFIX}direct_push:${pendingActionId}`,
   };
@@ -158,7 +196,7 @@ async function handle(interaction: ButtonInteraction): Promise<void> {
     });
   } catch (err) {
     await deletePendingAction(pendingId);
-    const msg = errorMessage(err);
+    const msg = errorMessage(err, pa.action);
     logger.error({ err, pendingId, action: pa.action }, 'pending action execution failed');
     await interaction.editReply({
       content: `⚠️ ${msg}`,
@@ -433,6 +471,135 @@ async function executeAction(
           `(task **#${payload.task_id}**). I'll DM you the verdict.`,
       };
     }
+    case 'update_task': {
+      const payload = pa.payload as unknown as UpdateTaskPayload;
+      const task = await executeUpdateTask(pa.discord_user_id, {
+        task_id: payload.task_id,
+        updates: payload.updates,
+      });
+      return { content: `✅ Updated task **#${task.id}**` };
+    }
+    case 'delete_task': {
+      const payload = pa.payload as unknown as DeleteTaskPayload;
+      await executeDeleteTask(pa.discord_user_id, payload.task_id);
+      const titleSuffix = payload.title ? `: ${payload.title}` : '';
+      return { content: `🗑️ Deleted task **#${payload.task_id}**${titleSuffix}` };
+    }
+    case 'link_task_milestone': {
+      const payload = pa.payload as unknown as LinkTaskMilestonePayload;
+      const task = await executeLinkTaskMilestone(pa.discord_user_id, {
+        task_id: payload.task_id,
+        milestone_id: payload.milestone_id ?? null,
+      });
+      const verb = payload.milestone_id == null ? 'Unlinked' : 'Linked';
+      return { content: `✅ ${verb} task **#${task.id}** ↔ milestone` };
+    }
+    case 'log_time': {
+      const payload = pa.payload as unknown as LogTimePayload;
+      const logged = await executeLogTime(pa.discord_user_id, {
+        project_id: payload.project_id,
+        ...(payload.task_id != null ? { task_id: payload.task_id } : {}),
+        ...(payload.hours != null ? { hours: payload.hours } : {}),
+        ...(payload.duration_minutes != null ? { duration_minutes: payload.duration_minutes } : {}),
+        description: payload.description,
+        date: payload.date,
+      });
+      const projectLabel = payload.project_name ?? `project #${payload.project_id}`;
+      return { content: `✅ Logged **${logged.hours}h** to ${projectLabel}` };
+    }
+    case 'start_work_session': {
+      const payload = pa.payload as unknown as StartWorkSessionPayload;
+      const session = await executeStartWorkSession(pa.discord_user_id, {
+        project_id: payload.project_id,
+        ...(payload.task_id != null ? { task_id: payload.task_id } : {}),
+        ...(payload.note ? { note: payload.note } : {}),
+      });
+      const projectLabel = payload.project_name ?? `project #${payload.project_id}`;
+      return { content: `▶️ Work session started in ${projectLabel} (session #${session.id})` };
+    }
+    case 'pause_work_session': {
+      const payload = pa.payload as unknown as PauseWorkSessionPayload;
+      await executePauseWorkSession(pa.discord_user_id, payload.session_id);
+      return { content: `⏸ Paused work session #${payload.session_id}` };
+    }
+    case 'resume_work_session': {
+      const payload = pa.payload as unknown as ResumeWorkSessionPayload;
+      await executeResumeWorkSession(pa.discord_user_id, payload.session_id);
+      return { content: `▶️ Resumed work session #${payload.session_id}` };
+    }
+    case 'stop_work_session': {
+      const payload = pa.payload as unknown as StopWorkSessionPayload;
+      const session = await executeStopWorkSession(pa.discord_user_id, payload.session_id, payload.note);
+      return {
+        content:
+          `⏹ Stopped work session #${session.id} · logged ${formatDuration(session.duration_seconds)}`,
+      };
+    }
+    case 'submit_issue_report': {
+      const payload = pa.payload as unknown as SubmitIssueReportPayload;
+      const report = await executeSubmitIssueReport(pa.discord_user_id, {
+        message: payload.message,
+        ...(payload.contact_email ? { contact_email: payload.contact_email } : {}),
+      });
+      return { content: `✅ Issue report submitted (#${report.id}). Thanks!` };
+    }
+    case 'accept_invitation': {
+      const payload = pa.payload as unknown as InvitationPayload;
+      await executeAcceptInvitation(pa.discord_user_id, payload.invitation_id);
+      return { content: `✅ Joined **${payload.project_name}**` };
+    }
+    case 'decline_invitation': {
+      const payload = pa.payload as unknown as InvitationPayload;
+      await executeDeclineInvitation(pa.discord_user_id, payload.invitation_id);
+      return { content: `🛑 Declined invitation to **${payload.project_name}**` };
+    }
+    case 'assign_task': {
+      const payload = pa.payload as unknown as AssignTaskPayload;
+      if (!payload.user_ids || payload.user_ids.length === 0) {
+        throw new Error('Pick an assignee from the dropdown first.');
+      }
+      const task = await executeAssignTask(pa.discord_user_id, {
+        task_id: payload.task_id,
+        user_ids: payload.user_ids,
+      });
+      const who = payload.assignee_name ?? `user #${payload.user_ids[0]}`;
+      return { content: `✅ Assigned task **#${task.id}** → ${who}` };
+    }
+    case 'create_milestone': {
+      const payload = pa.payload as unknown as CreateMilestonePayload;
+      const ms = await executeCreateMilestone(pa.discord_user_id, {
+        project_id: payload.project_id,
+        name: payload.name,
+        ...(payload.due_date ? { due_date: payload.due_date } : {}),
+        ...(payload.description ? { description: payload.description } : {}),
+      });
+      return { content: `✅ Created milestone **${ms.name}** (#${ms.id})` };
+    }
+    case 'update_milestone': {
+      const payload = pa.payload as unknown as UpdateMilestonePayload;
+      const ms = await executeUpdateMilestone(pa.discord_user_id, payload.milestone_id, payload.updates);
+      return { content: `✅ Updated milestone **${ms.name}** (#${ms.id})` };
+    }
+    case 'delete_milestone': {
+      const payload = pa.payload as unknown as DeleteMilestonePayload;
+      await executeDeleteMilestone(pa.discord_user_id, payload.milestone_id);
+      return { content: `🗑️ Deleted milestone **${payload.milestone_name}** (#${payload.milestone_id})` };
+    }
+    case 'invite_member': {
+      const payload = pa.payload as unknown as InviteMemberPayload;
+      await executeInviteMember(pa.discord_user_id, payload.project_id, {
+        email: payload.email,
+        role: payload.role ?? 'developer',
+      });
+      const projectLabel = payload.project_name ?? `project #${payload.project_id}`;
+      return { content: `✅ Invited **${payload.email}** (${payload.role ?? 'developer'}) to ${projectLabel}` };
+    }
+    case 'remove_member': {
+      const payload = pa.payload as unknown as RemoveMemberPayload;
+      await executeRemoveMember(pa.discord_user_id, payload.project_id, payload.user_id);
+      const projectLabel = payload.project_name ?? `project #${payload.project_id}`;
+      return { content: `🗑️ Removed **${payload.member_name}** from ${projectLabel}` };
+    }
     default:
       throw new Error(`Unknown action: ${pa.action as string}`);
   }
@@ -442,39 +609,6 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-function errorMessage(err: unknown): string {
-  if (err instanceof NotLinkedError) return 'You are not linked. Run `/link`.';
-  if (err instanceof LinkExpiredError) return 'Your link expired. Run `/link` to reconnect.';
-  if (err instanceof ContinuumApiError) {
-    if (err.status === 400) {
-      const body = err.body.toLowerCase();
-      if (body.includes('linked_branch') || body.includes('branch not linked')) {
-        return 'That branch isn\'t linked to the task yet. Link it first, then build.';
-      }
-      return `Validation error: ${err.body.slice(0, 200)}`;
-    }
-    if (err.status === 403) {
-      const body = err.body.toLowerCase();
-      if (body.includes('repo') || body.includes('credential') || body.includes('token')) {
-        return 'Git credentials missing for this repo — fix in Continuum project settings.';
-      }
-      return "You don't have permission to do that.";
-    }
-    if (err.status === 404) return 'Not found.';
-    if (err.status === 409) {
-      const body = err.body.toLowerCase();
-      if (body.includes('already') && body.includes('exist')) {
-        return 'Branch already exists on the remote.';
-      }
-      if (body.includes('active') || body.includes('running') || body.includes('queued')) {
-        return 'A build is already running for this project. Wait for it or cancel it in Continuum.';
-      }
-      return `Conflict: ${err.body.slice(0, 200)}`;
-    }
-    if (err.status === 422) return `Validation error: ${err.body.slice(0, 200)}`;
-    if (err.status === 429) return 'Rate limit hit — try again shortly.';
-    if (err.status === 503) return 'Build queue unavailable — try again shortly.';
-    return `Continuum API error (${err.status}).`;
-  }
-  return 'Something went wrong.';
+function errorMessage(err: unknown, kind?: string): string {
+  return mapApiError(err, kind ? { kind } : {}).user;
 }

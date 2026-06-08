@@ -283,3 +283,120 @@ export interface ReviewRun {
   created_at?: string;
   updated_at?: string;
 }
+
+export type GlobalRole = 'admin' | 'project_manager' | 'developer' | 'client';
+
+export interface MeUser {
+  id: number;
+  username?: string | null;
+  display_name?: string | null;
+  role: GlobalRole;
+  email?: string | null;
+}
+
+export type ProjectMemberRole = 'client' | 'developer' | 'project_manager';
+
+export interface ProjectMemberUser {
+  id: number;
+  display_name?: string | null;
+  username?: string | null;
+  email?: string | null;
+}
+
+export interface ProjectMember {
+  id: number;
+  user_id: number;
+  role: ProjectMemberRole | string;
+  added_at?: string;
+  user?: ProjectMemberUser | null;
+}
+
+export type TaskPriority = 'high' | 'medium' | 'low' | 'info';
+
+export interface TaskUpdateInput {
+  title?: string;
+  description?: string;
+  due_date?: string;
+  scope_weight?: 'XS' | 'S' | 'M' | 'L' | 'XL';
+  priority?: TaskPriority;
+  estimated_hours?: number;
+  labels?: string[];
+}
+
+export type WorkSessionStatus = 'active' | 'paused' | 'completed';
+
+export interface WorkSession {
+  id: number;
+  user_id: number;
+  project_id: number;
+  task_id?: number | null;
+  started_at: string;
+  ended_at?: string | null;
+  last_resumed_at?: string | null;
+  duration_seconds: number;
+  status: WorkSessionStatus;
+  note?: string | null;
+  current_duration_seconds?: number;
+}
+
+export interface LoggedHourCreateInput {
+  project_id: number;
+  task_id?: number;
+  hours?: number;
+  duration_minutes?: number;
+  description: string;
+  date: string;
+}
+
+export interface LoggedHour {
+  id: number;
+  user_id: number;
+  project_id: number;
+  task_id?: number | null;
+  hours: number;
+  description?: string | null;
+  date?: string | null;
+  task_title?: string | null;
+  project_name?: string | null;
+}
+
+export interface PendingInvitation {
+  id: number;
+  project_id: number;
+  project_name: string;
+  email: string;
+  role: string;
+  status: string;
+  created_at: string;
+  inviter_name?: string | null;
+}
+
+export interface IssueReport {
+  id: number;
+  message: string;
+  user_id?: number | null;
+  contact_email?: string | null;
+  created_at: string;
+}
+
+export interface MilestoneCreateInput {
+  project_id: number;
+  name: string;
+  due_date?: string;
+  description?: string;
+}
+
+export interface MilestoneUpdateInput {
+  name?: string;
+  due_date?: string;
+  description?: string;
+}
+
+export interface AssignTaskInput {
+  user_ids: number[];
+}
+
+export interface InviteMemberInput {
+  email: string;
+  role: ProjectMemberRole;
+}

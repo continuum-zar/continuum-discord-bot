@@ -1,12 +1,9 @@
 import {
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle,
-  EmbedBuilder,
   Events,
   MessageFlags,
   StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
   type Client,
   type Interaction,
   type StringSelectMenuInteraction,
@@ -15,28 +12,55 @@ import { logger } from '../../logger.js';
 import {
   getPendingAction,
   updatePayload,
+  type PendingAction,
 } from '../../db/pendingActions.js';
 import { listMilestones } from '../../tools/listMilestones.js';
+import { listProjectMembers, memberDisplayName } from '../../tools/projectMembers.js';
 import {
   buildCreateTaskPreview,
   buildDraftTaskPreview,
+  buildLinkTaskMilestonePreview,
+  buildAssignTaskPreview,
+  buildInviteMemberPreview,
   type DraftTaskPayload,
+  type LinkTaskMilestonePayload,
+  type AssignTaskPayload,
+  type InviteMemberPayload,
+  type PickerKind,
 } from '../../agent/tools.js';
-import type { CreateTaskInput } from '../../api/types.js';
-import { buildCustomIds, MILESTONE_SELECT_PREFIX } from './buttonHandler.js';
+import type { CreateTaskInput, ProjectMember } from '../../api/types.js';
+import { buildCustomIds } from './buttonHandler.js';
+import {
+  ASSIGNEE_SELECT_PREFIX,
+  buildConfirmButtons,
+  buildConfirmEmbed,
+  buildPickerRows,
+  MILESTONE_SELECT_PREFIX,
+  NO_MILESTONE_VALUE,
+  ROLE_SELECT_PREFIX,
+  type SelectedPickerValues,
+} from './uiHelpers.js';
 
-const NO_MILESTONE_VALUE = 'none';
+const PREFIX_TO_KIND: Array<{ prefix: string; kind: PickerKind }> = [
+  { prefix: MILESTONE_SELECT_PREFIX, kind: 'milestone' },
+  { prefix: ASSIGNEE_SELECT_PREFIX, kind: 'assignee' },
+  { prefix: ROLE_SELECT_PREFIX, kind: 'member_role' },
+];
 
 export function attachSelectHandler(client: Client): void {
   client.on(Events.InteractionCreate, (interaction: Interaction) => {
     if (!interaction.isStringSelectMenu()) return;
-    if (!interaction.customId.startsWith(MILESTONE_SELECT_PREFIX)) return;
+    if (!PREFIX_TO_KIND.some((p) => interaction.customId.startsWith(p.prefix))) return;
     void handle(interaction);
   });
 }
 
 async function handle(interaction: StringSelectMenuInteraction): Promise<void> {
-  const pendingId = interaction.customId.slice(MILESTONE_SELECT_PREFIX.length);
+  const match = PREFIX_TO_KIND.find((p) => interaction.customId.startsWith(p.prefix));
+  if (!match) return;
+  const pendingId = interaction.customId.slice(match.prefix.length);
+  const choice = interaction.values[0];
+
   await interaction.deferUpdate();
 
   const pa = await getPendingAction(pendingId);
@@ -57,102 +81,186 @@ async function handle(interaction: StringSelectMenuInteraction): Promise<void> {
     return;
   }
 
-  if (pa.action !== 'create_task' && pa.action !== 'draft_task') {
-    return;
+  let pickerSelected: SelectedPickerValues = {};
+  let destructive = false;
+  let projectId: number | undefined;
+
+  switch (match.kind) {
+    case 'milestone':
+      pickerSelected = handleMilestonePick(pa, choice);
+      projectId = milestonePickerProjectId(pa);
+      break;
+    case 'assignee':
+      pickerSelected = handleAssigneePick(pa, choice);
+      projectId = assigneePickerProjectId(pa);
+      break;
+    case 'member_role':
+      pickerSelected = handleRolePick(pa, choice);
+      projectId = rolePickerProjectId(pa);
+      destructive = false;
+      break;
   }
 
-  const choice = interaction.values[0];
-  const projectId =
-    pa.action === 'create_task'
-      ? (pa.payload as unknown as CreateTaskInput).project_id
-      : (pa.payload as unknown as DraftTaskPayload).project_id;
-
-  // Mutate the staged payload's milestone_id (works for both kinds).
-  const mutable = pa.payload as Record<string, unknown>;
-  let milestoneName: string | null = null;
-  if (choice === NO_MILESTONE_VALUE) {
-    delete mutable.milestone_id;
-  } else {
-    const milestoneId = Number.parseInt(choice, 10);
-    if (!Number.isFinite(milestoneId)) return;
-    mutable.milestone_id = milestoneId;
-
-    try {
-      const milestones = await listMilestones(pa.discord_user_id, projectId);
-      milestoneName = milestones.find((m) => m.id === milestoneId)?.name ?? null;
-    } catch (err) {
-      logger.warn({ err, milestoneId }, 'failed to look up milestone name');
-    }
+  if (pa.action === 'delete_task' || pa.action === 'delete_milestone' || pa.action === 'remove_member' || pa.action === 'decline_invitation') {
+    destructive = true;
   }
 
-  await updatePayload(pendingId, mutable);
+  await updatePayload(pendingId, pa.payload);
+
+  let newPreview: string;
+  try {
+    newPreview = await rebuildPreview(interaction.user.id, pa);
+  } catch (err) {
+    logger.warn({ err, action: pa.action }, 'failed to rebuild preview after pick');
+    newPreview = '(updated)';
+  }
 
   const ids = buildCustomIds(pendingId);
-  const newPreview =
-    pa.action === 'create_task'
-      ? buildCreateTaskPreview(mutable as unknown as CreateTaskInput, milestoneName)
-      : buildDraftTaskPreview(mutable as unknown as DraftTaskPayload, milestoneName);
-  const embed = new EmbedBuilder()
-    .setTitle('Confirm action')
-    .setDescription(newPreview)
-    .setFooter({ text: 'Expires in 5 minutes' });
+  const embed = buildConfirmEmbed(newPreview, { destructive });
 
-  // Rebuild the select menu so the chosen option stays highlighted.
-  let rebuiltSelectRow: ActionRowBuilder<StringSelectMenuBuilder> | null = null;
-  try {
-    const milestones = await listMilestones(pa.discord_user_id, projectId);
-    rebuiltSelectRow = buildMilestoneSelectRow(ids.milestoneSelect, milestones, choice);
-  } catch (err) {
-    logger.warn({ err }, 'failed to rebuild milestone select after pick');
+  // Rebuild pickers so the chosen option stays highlighted; preserve any other pickers.
+  let pickerRows: ActionRowBuilder<StringSelectMenuBuilder>[] = [];
+  const pickers = derivePickersForAction(pa, projectId);
+  if (pickers.length > 0) {
+    pickerRows = await buildPickerRows(interaction.user.id, pendingId, pickers, pickerSelected);
   }
 
-  const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(ids.confirm).setLabel('Confirm').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(ids.cancel).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
-  );
+  const buttonRow = buildConfirmButtons(ids, { destructive });
 
   const components: ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] = [];
-  if (rebuiltSelectRow) components.push(rebuiltSelectRow);
+  for (const row of pickerRows) components.push(row);
   components.push(buttonRow);
 
   await interaction.editReply({ embeds: [embed], components });
 }
 
-function buildMilestoneSelectRow(
-  customId: string,
-  milestones: { id: number; name: string; status: string; due_date: string | null }[],
-  selectedValue: string,
-): ActionRowBuilder<StringSelectMenuBuilder> | null {
-  const options: StringSelectMenuOptionBuilder[] = [
-    new StringSelectMenuOptionBuilder()
-      .setLabel('No milestone')
-      .setValue(NO_MILESTONE_VALUE)
-      .setDescription('Leave this task unassigned to any milestone')
-      .setDefault(selectedValue === NO_MILESTONE_VALUE),
-  ];
-
-  for (const m of milestones.slice(0, 24)) {
-    const label = m.name.length > 100 ? `${m.name.slice(0, 97)}…` : m.name;
-    const descParts: string[] = [];
-    if (m.status) descParts.push(m.status.replace('_', ' '));
-    if (m.due_date) descParts.push(`due ${m.due_date.slice(0, 10)}`);
-    const description = descParts.join(' · ').slice(0, 100);
-    const opt = new StringSelectMenuOptionBuilder()
-      .setLabel(label)
-      .setValue(String(m.id))
-      .setDefault(selectedValue === String(m.id));
-    if (description) opt.setDescription(description);
-    options.push(opt);
+function handleMilestonePick(pa: PendingAction, choice: string): SelectedPickerValues {
+  const mutable = pa.payload as Record<string, unknown>;
+  if (choice === NO_MILESTONE_VALUE) {
+    if (pa.action === 'link_task_milestone') {
+      mutable.milestone_id = null;
+    } else {
+      delete mutable.milestone_id;
+    }
+  } else {
+    const id = Number.parseInt(choice, 10);
+    if (Number.isFinite(id)) mutable.milestone_id = id;
   }
-
-  if (options.length === 1) return null;
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(customId)
-    .setPlaceholder('Pick a milestone (optional)')
-    .setMinValues(1)
-    .setMaxValues(1)
-    .addOptions(options);
-
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  return { milestone: choice };
 }
+
+function handleAssigneePick(pa: PendingAction, choice: string): SelectedPickerValues {
+  const id = Number.parseInt(choice, 10);
+  if (!Number.isFinite(id)) return { assignee: choice };
+  const mutable = pa.payload as Record<string, unknown>;
+  mutable.user_ids = [id];
+  return { assignee: choice };
+}
+
+function handleRolePick(pa: PendingAction, choice: string): SelectedPickerValues {
+  const mutable = pa.payload as Record<string, unknown>;
+  const role = (['client', 'developer', 'project_manager'] as const).find((r) => r === choice);
+  if (role) mutable.role = role;
+  return { member_role: choice };
+}
+
+function milestonePickerProjectId(pa: PendingAction): number | undefined {
+  if (pa.action === 'create_task') return (pa.payload as unknown as CreateTaskInput).project_id;
+  if (pa.action === 'draft_task') return (pa.payload as unknown as DraftTaskPayload).project_id;
+  if (pa.action === 'link_task_milestone') return (pa.payload as unknown as LinkTaskMilestonePayload).project_id;
+  return undefined;
+}
+
+function assigneePickerProjectId(pa: PendingAction): number | undefined {
+  if (pa.action === 'assign_task') return (pa.payload as unknown as AssignTaskPayload).project_id;
+  return undefined;
+}
+
+function rolePickerProjectId(pa: PendingAction): number | undefined {
+  if (pa.action === 'invite_member') return (pa.payload as unknown as InviteMemberPayload).project_id;
+  return undefined;
+}
+
+function derivePickersForAction(
+  pa: PendingAction,
+  projectId: number | undefined,
+): Array<{ kind: PickerKind; projectId?: number }> {
+  if (projectId == null) return [];
+  switch (pa.action) {
+    case 'create_task':
+    case 'draft_task':
+    case 'link_task_milestone':
+      return [{ kind: 'milestone', projectId }];
+    case 'assign_task':
+      return [{ kind: 'assignee', projectId }];
+    case 'invite_member':
+      return [{ kind: 'member_role', projectId }];
+    default:
+      return [];
+  }
+}
+
+async function rebuildPreview(discordUserId: string, pa: PendingAction): Promise<string> {
+  switch (pa.action) {
+    case 'create_task': {
+      const payload = pa.payload as unknown as CreateTaskInput;
+      const milestoneName = await lookupMilestoneName(discordUserId, payload.project_id, payload.milestone_id ?? null);
+      return buildCreateTaskPreview(payload, milestoneName);
+    }
+    case 'draft_task': {
+      const payload = pa.payload as unknown as DraftTaskPayload;
+      const milestoneName = await lookupMilestoneName(discordUserId, payload.project_id, payload.milestone_id ?? null);
+      return buildDraftTaskPreview(payload, milestoneName);
+    }
+    case 'link_task_milestone': {
+      const payload = pa.payload as unknown as LinkTaskMilestonePayload;
+      const milestoneName = await lookupMilestoneName(discordUserId, payload.project_id, payload.milestone_id ?? null);
+      return buildLinkTaskMilestonePreview(payload, milestoneName);
+    }
+    case 'assign_task': {
+      const payload = pa.payload as unknown as AssignTaskPayload;
+      const name = await lookupAssigneeName(discordUserId, payload.project_id, payload.user_ids?.[0]);
+      if (name) payload.assignee_name = name;
+      return buildAssignTaskPreview(payload);
+    }
+    case 'invite_member': {
+      const payload = pa.payload as unknown as InviteMemberPayload;
+      // role is already in payload; preview reads it directly
+      return buildInviteMemberPreview(payload);
+    }
+    default:
+      return '(updated)';
+  }
+}
+
+async function lookupMilestoneName(
+  discordUserId: string,
+  projectId: number,
+  milestoneId: number | null | undefined,
+): Promise<string | null> {
+  if (milestoneId == null) return null;
+  try {
+    const milestones = await listMilestones(discordUserId, projectId);
+    return milestones.find((m) => m.id === milestoneId)?.name ?? null;
+  } catch (err) {
+    logger.warn({ err, projectId, milestoneId }, 'milestone lookup failed');
+    return null;
+  }
+}
+
+async function lookupAssigneeName(
+  discordUserId: string,
+  projectId: number,
+  userId: number | undefined,
+): Promise<string | null> {
+  if (userId == null) return null;
+  try {
+    const members = await listProjectMembers(discordUserId, projectId);
+    const m = members.find((x: ProjectMember) => x.user_id === userId);
+    return m ? memberDisplayName(m) : null;
+  } catch (err) {
+    logger.warn({ err, projectId, userId }, 'assignee lookup failed');
+    return null;
+  }
+}
+

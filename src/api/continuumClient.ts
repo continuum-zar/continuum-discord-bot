@@ -62,4 +62,6 @@ export const continuumClient = {
     request<T>(discordUserId, 'PATCH', path, body),
   put: <T>(discordUserId: string, path: string, body?: unknown) =>
     request<T>(discordUserId, 'PUT', path, body),
+  delete: <T>(discordUserId: string, path: string) =>
+    request<T>(discordUserId, 'DELETE', path),
 };
