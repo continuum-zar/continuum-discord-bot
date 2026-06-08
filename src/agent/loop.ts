@@ -91,8 +91,24 @@ export async function runAgent(opts: {
 
 function formatToolError(err: unknown): { error: string; status?: number } {
   if (err instanceof ContinuumApiError) {
-    if (err.status === 403) return { error: "You don't have access to that resource.", status: 403 };
-    if (err.status === 404) return { error: 'Not found.', status: 404 };
+    if (err.status === 403) {
+      return {
+        error:
+          "You don't have access to that resource. If you guessed an id, do NOT retry with another guess — " +
+          'verify the id via the matching list/resolve tool (resolve_project, list_milestones, list_project_members, ' +
+          'list_repositories, list_pending_invitations) or ask the user.',
+        status: 403,
+      };
+    }
+    if (err.status === 404) {
+      return {
+        error:
+          'Not found — the id you passed does not exist. Do NOT retry with a different guess. Verify the id via ' +
+          'the matching list/resolve tool (resolve_project, get_task, list_milestones, list_project_members, ' +
+          'list_repositories, list_pending_invitations) or ask the user for the right value.',
+        status: 404,
+      };
+    }
     if (err.status === 429) return { error: 'Rate limit hit — try again in a moment.', status: 429 };
     return { error: `API error ${err.status}`, status: err.status };
   }

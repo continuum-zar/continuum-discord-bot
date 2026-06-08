@@ -1291,23 +1291,24 @@ export const writeTools: Record<string, ToolHandler> = {
         name: 'link_task_milestone',
         description:
           'Stage linking/unlinking a task to a milestone. After staging, Discord shows a milestone dropdown ' +
-          '(including "No milestone" to clear). The user picks then Confirms. Do NOT pass milestone_id ' +
-          "yourself unless the user explicitly named one and you resolved it via list_milestones.",
+          '(including "No milestone" to clear). The user picks then Confirms. The project is resolved from the ' +
+          "task automatically — do NOT pass project_id. Do NOT pass milestone_id either; the user picks from the dropdown.",
         parameters: {
           type: 'object',
           properties: {
             task_id: { type: 'number' },
-            project_id: { type: 'number', description: 'Project the task belongs to — needed to populate the picker.' },
           },
-          required: ['task_id', 'project_id'],
+          required: ['task_id'],
           additionalProperties: false,
         },
       },
     },
     handler: async (args, ctx) => {
+      const taskId = num(args, 'task_id');
+      const task = await getTask(ctx.discordUserId, taskId);
       const payload: LinkTaskMilestonePayload = {
-        task_id: num(args, 'task_id'),
-        project_id: num(args, 'project_id'),
+        task_id: taskId,
+        project_id: task.project_id,
       };
       const pa = await createPendingAction({
         discordUserId: ctx.discordUserId,
@@ -1656,23 +1657,24 @@ export const writeTools: Record<string, ToolHandler> = {
         name: 'assign_task',
         description:
           'Stage assigning a task to a project member (PM/admin only). Discord shows an assignee dropdown populated ' +
-          "from project members. Do NOT pass user_ids — the user picks. Stage with task_id and project_id. " +
-          'User must Confirm.',
+          "from project members. Do NOT pass user_ids — the user picks. The project is resolved from the task " +
+          'automatically — do NOT pass project_id. User must Confirm.',
         parameters: {
           type: 'object',
           properties: {
             task_id: { type: 'number' },
-            project_id: { type: 'number' },
           },
-          required: ['task_id', 'project_id'],
+          required: ['task_id'],
           additionalProperties: false,
         },
       },
     },
     handler: async (args, ctx) => {
+      const taskId = num(args, 'task_id');
+      const task = await getTask(ctx.discordUserId, taskId);
       const payload: AssignTaskPayload = {
-        task_id: num(args, 'task_id'),
-        project_id: num(args, 'project_id'),
+        task_id: taskId,
+        project_id: task.project_id,
       };
       const pa = await createPendingAction({
         discordUserId: ctx.discordUserId,
