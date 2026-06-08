@@ -1,5 +1,6 @@
 import { continuumClient } from '../api/continuumClient.js';
 import type { WorkSession } from '../api/types.js';
+import { applyTaskProjectId, resolveProjectIdForTask } from './resolveTaskProject.js';
 
 export async function getActiveSession(discordUserId: string): Promise<WorkSession | null> {
   return continuumClient.get<WorkSession | null>(discordUserId, '/work-sessions/active');
@@ -9,7 +10,10 @@ export async function executeStartWorkSession(
   discordUserId: string,
   input: { project_id: number; task_id?: number; note?: string },
 ): Promise<WorkSession> {
-  return continuumClient.post<WorkSession>(discordUserId, '/work-sessions/', input);
+  const body = input.task_id != null
+    ? applyTaskProjectId(input, await resolveProjectIdForTask(discordUserId, input.task_id))
+    : input;
+  return continuumClient.post<WorkSession>(discordUserId, '/work-sessions/', body);
 }
 
 export async function executePauseWorkSession(

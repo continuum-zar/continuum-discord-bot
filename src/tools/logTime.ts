@@ -1,11 +1,15 @@
 import { continuumClient } from '../api/continuumClient.js';
 import type { LoggedHour, LoggedHourCreateInput } from '../api/types.js';
+import { applyTaskProjectId, resolveProjectIdForTask } from './resolveTaskProject.js';
 
 export async function executeLogTime(
   discordUserId: string,
   input: LoggedHourCreateInput,
 ): Promise<LoggedHour> {
-  return continuumClient.post<LoggedHour>(discordUserId, '/logged-hours/', input);
+  const body = input.task_id != null
+    ? applyTaskProjectId(input, await resolveProjectIdForTask(discordUserId, input.task_id))
+    : input;
+  return continuumClient.post<LoggedHour>(discordUserId, '/logged-hours/', body);
 }
 
 /**
