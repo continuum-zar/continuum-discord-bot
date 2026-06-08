@@ -19,6 +19,17 @@ export interface Project {
   client_id: number | null;
 }
 
+export interface KanbanColumn {
+  id: string;
+  title: string;
+  task_status: 'todo' | 'in_progress' | 'done';
+  kind: 'todo' | 'in_progress' | 'done';
+}
+
+export interface KanbanBoardResponse {
+  columns: KanbanColumn[];
+}
+
 export interface TaskSummary {
   id: number;
   title: string;

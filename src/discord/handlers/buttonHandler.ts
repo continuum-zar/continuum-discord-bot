@@ -18,6 +18,7 @@ import {
 } from '../../db/pendingActions.js';
 import { executeCreateTask } from '../../tools/createTask.js';
 import { executeSetTaskStatus } from '../../tools/setTaskStatus.js';
+import { getKanbanBoard } from '../../tools/getKanbanBoard.js';
 import { executeAddComment } from '../../tools/addComment.js';
 import { confirmDraftedTasks, mapGeneratedToConfirm } from '../../tools/draftTasks.js';
 import { executeLinkBranch } from '../../tools/linkBranch.js';
@@ -356,9 +357,36 @@ async function executeAction(
       };
     }
     case 'set_task_status': {
-      const input = pa.payload as { task_id: number; status: 'todo' | 'in_progress' | 'done' };
-      const task = await executeSetTaskStatus(pa.discord_user_id, input);
-      return { content: `✅ Task **#${task.id}** → \`${task.status}\`` };
+      const input = pa.payload as {
+        task_id: number;
+        project_id?: number;
+        status?: 'todo' | 'in_progress' | 'done';
+        column_id?: string;
+      };
+      if (!input.status && !input.column_id) {
+        return { content: '⚠️ No status or column selected.' };
+      }
+      const task = input.column_id
+        ? await executeSetTaskStatus(pa.discord_user_id, {
+            task_id: input.task_id,
+            column_id: input.column_id,
+          })
+        : await executeSetTaskStatus(pa.discord_user_id, {
+            task_id: input.task_id,
+            status: input.status!,
+          });
+      let label = task.status;
+      const projectId = input.project_id ?? task.project_id;
+      if (projectId != null) {
+        try {
+          const columns = await getKanbanBoard(pa.discord_user_id, projectId);
+          const match = columns.find((c) => c.id === task.status);
+          if (match?.title) label = `${match.title} (${task.status})`;
+        } catch {
+          // fall back to raw status
+        }
+      }
+      return { content: `✅ Task **#${task.id}** → \`${label}\`` };
     }
     case 'add_comment': {
       const input = pa.payload as { task_id: number; content: string };

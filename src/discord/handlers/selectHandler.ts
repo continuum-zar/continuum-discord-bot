@@ -35,16 +35,19 @@ import {
   buildConfirmButtons,
   buildConfirmEmbed,
   buildPickerRows,
+  KANBAN_COLUMN_SELECT_PREFIX,
   MILESTONE_SELECT_PREFIX,
   NO_MILESTONE_VALUE,
   ROLE_SELECT_PREFIX,
   type SelectedPickerValues,
 } from './uiHelpers.js';
+import { getKanbanBoard } from '../../tools/getKanbanBoard.js';
 
 const PREFIX_TO_KIND: Array<{ prefix: string; kind: PickerKind }> = [
   { prefix: MILESTONE_SELECT_PREFIX, kind: 'milestone' },
   { prefix: ASSIGNEE_SELECT_PREFIX, kind: 'assignee' },
   { prefix: ROLE_SELECT_PREFIX, kind: 'member_role' },
+  { prefix: KANBAN_COLUMN_SELECT_PREFIX, kind: 'kanban_column' },
 ];
 
 export function attachSelectHandler(client: Client): void {
@@ -98,6 +101,10 @@ async function handle(interaction: StringSelectMenuInteraction): Promise<void> {
       pickerSelected = handleRolePick(pa, choice);
       projectId = rolePickerProjectId(pa);
       destructive = false;
+      break;
+    case 'kanban_column':
+      pickerSelected = handleKanbanColumnPick(pa, choice);
+      projectId = kanbanColumnPickerProjectId(pa);
       break;
   }
 
@@ -164,6 +171,21 @@ function handleRolePick(pa: PendingAction, choice: string): SelectedPickerValues
   return { member_role: choice };
 }
 
+function handleKanbanColumnPick(pa: PendingAction, choice: string): SelectedPickerValues {
+  const mutable = pa.payload as Record<string, unknown>;
+  mutable.column_id = choice;
+  delete mutable.status;
+  return { kanban_column: choice };
+}
+
+function kanbanColumnPickerProjectId(pa: PendingAction): number | undefined {
+  if (pa.action === 'set_task_status') {
+    const p = pa.payload as { project_id?: number };
+    return typeof p.project_id === 'number' ? p.project_id : undefined;
+  }
+  return undefined;
+}
+
 function milestonePickerProjectId(pa: PendingAction): number | undefined {
   if (pa.action === 'create_task') return (pa.payload as unknown as CreateTaskInput).project_id;
   if (pa.action === 'draft_task') return (pa.payload as unknown as DraftTaskPayload).project_id;
@@ -195,6 +217,8 @@ function derivePickersForAction(
       return [{ kind: 'assignee', projectId }];
     case 'invite_member':
       return [{ kind: 'member_role', projectId }];
+    case 'set_task_status':
+      return [{ kind: 'kanban_column', projectId }];
     default:
       return [];
   }
@@ -227,6 +251,26 @@ async function rebuildPreview(discordUserId: string, pa: PendingAction): Promise
       const payload = pa.payload as unknown as InviteMemberPayload;
       // role is already in payload; preview reads it directly
       return buildInviteMemberPreview(payload);
+    }
+    case 'set_task_status': {
+      const payload = pa.payload as unknown as {
+        task_id: number;
+        project_id?: number;
+        status?: string;
+        column_id?: string;
+      };
+      const target = payload.column_id ?? payload.status ?? '(none)';
+      let label = target;
+      if (payload.column_id && payload.project_id != null) {
+        try {
+          const columns = await getKanbanBoard(discordUserId, payload.project_id);
+          const match = columns.find((c) => c.id === payload.column_id);
+          if (match?.title) label = `${match.title} (${payload.column_id})`;
+        } catch (err) {
+          logger.warn({ err, payload }, 'kanban column lookup failed');
+        }
+      }
+      return `**Set status** of task #${payload.task_id} → \`${label}\``;
     }
     default:
       return '(updated)';
