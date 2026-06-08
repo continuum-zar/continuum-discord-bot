@@ -21,6 +21,7 @@ import { generateDraftTasks } from '../tools/draftTasks.js';
 import { listMyTasks } from '../tools/listMyTasks.js';
 import { getTaskTimeline } from '../tools/getTaskTimeline.js';
 import { listPendingInvitations } from '../tools/invitations.js';
+import { getKanbanBoard } from '../tools/getKanbanBoard.js';
 import {
   formatDuration,
   getActiveSession,
@@ -28,7 +29,7 @@ import {
 import { normalizeLoggedHourDate } from '../tools/logTime.js';
 import { listProjectMembers, memberDisplayName } from '../tools/projectMembers.js';
 
-export type PickerKind = 'milestone' | 'assignee' | 'member_role';
+export type PickerKind = 'milestone' | 'assignee' | 'member_role' | 'kanban_column';
 
 export interface PickerSpec {
   kind: PickerKind;
@@ -505,12 +506,20 @@ export const readTools: Record<string, ToolHandler> = {
       type: 'function',
       function: {
         name: 'list_tasks',
-        description: 'List tasks, optionally filtered by project, status, or assignee.',
+        description:
+          'List tasks, optionally filtered by project, semantic status, exact Kanban column, ' +
+          'or assignee. Use column_id (requires project_id; mutually exclusive with status) to ' +
+          'filter to a specific swimlane like "QA Review"; discover column ids with get_kanban_board.',
         parameters: {
           type: 'object',
           properties: {
             project_id: { type: 'number' },
             status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
+            column_id: {
+              type: 'string',
+              description:
+                'Exact Kanban column id for project_id (mutually exclusive with status).',
+            },
             assigned_to: { type: 'number' },
             limit: { type: 'number', minimum: 1, maximum: 100 },
           },
@@ -518,13 +527,51 @@ export const readTools: Record<string, ToolHandler> = {
         },
       },
     },
-    handler: async (args, ctx) =>
-      listTasks(ctx.discordUserId, {
+    handler: async (args, ctx) => {
+      const columnId = optStr(args, 'column_id');
+      const status = optStr(args, 'status') as 'todo' | 'in_progress' | 'done' | undefined;
+      if (columnId && status) {
+        return { error: 'status and column_id are mutually exclusive — pass one or the other.' };
+      }
+      if (columnId && optNum(args, 'project_id') == null) {
+        return { error: 'column_id requires project_id.' };
+      }
+      return listTasks(ctx.discordUserId, {
         project_id: optNum(args, 'project_id'),
-        status: optStr(args, 'status') as 'todo' | 'in_progress' | 'done' | undefined,
+        status,
+        column_id: columnId,
         assigned_to: optNum(args, 'assigned_to'),
         limit: optNum(args, 'limit'),
-      }),
+      });
+    },
+  },
+
+  get_kanban_board: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'get_kanban_board',
+        description:
+          'Fetch the Kanban swimlane layout for a project: ordered columns with id, title, kind ' +
+          '(todo/in_progress/done). Call this before moving a task to a named custom column or ' +
+          'filtering list_tasks by column_id, so you know the exact column id to use.',
+        parameters: {
+          type: 'object',
+          properties: { project_id: { type: 'number' } },
+          required: ['project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const columns = await getKanbanBoard(ctx.discordUserId, num(args, 'project_id'));
+      return columns.map((c) => ({
+        id: c.id,
+        title: c.title,
+        kind: c.kind,
+        task_status: c.task_status,
+      }));
+    },
   },
 
   get_task: {
@@ -648,24 +695,40 @@ export const readTools: Record<string, ToolHandler> = {
         name: 'list_my_tasks',
         description:
           'List tasks assigned to the linked user. Convenience wrapper around list_tasks with assigned_to=me. ' +
-          'Optional filters: project_id, status, limit.',
+          'Optional filters: project_id, status, column_id (requires project_id; mutually exclusive ' +
+          'with status), limit.',
         parameters: {
           type: 'object',
           properties: {
             project_id: { type: 'number' },
             status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
+            column_id: {
+              type: 'string',
+              description:
+                'Exact Kanban column id for project_id (mutually exclusive with status).',
+            },
             limit: { type: 'number', minimum: 1, maximum: 100 },
           },
           additionalProperties: false,
         },
       },
     },
-    handler: async (args, ctx) =>
-      listMyTasks(ctx.discordUserId, {
+    handler: async (args, ctx) => {
+      const columnId = optStr(args, 'column_id');
+      const status = optStr(args, 'status') as 'todo' | 'in_progress' | 'done' | undefined;
+      if (columnId && status) {
+        return { error: 'status and column_id are mutually exclusive — pass one or the other.' };
+      }
+      if (columnId && optNum(args, 'project_id') == null) {
+        return { error: 'column_id requires project_id.' };
+      }
+      return listMyTasks(ctx.discordUserId, {
         ...(optNum(args, 'project_id') != null ? { project_id: optNum(args, 'project_id')! } : {}),
-        ...(optStr(args, 'status') ? { status: optStr(args, 'status') as 'todo' | 'in_progress' | 'done' } : {}),
+        ...(status ? { status } : {}),
+        ...(columnId ? { column_id: columnId } : {}),
         ...(optNum(args, 'limit') != null ? { limit: optNum(args, 'limit')! } : {}),
-      }),
+      });
+    },
   },
 
   get_task_timeline: {
@@ -903,30 +966,64 @@ export const writeTools: Record<string, ToolHandler> = {
       function: {
         name: 'set_task_status',
         description:
-          'Stage a task status change. Does NOT execute — the user must tap Confirm.',
+          'Stage a task status / Kanban column change. Pass either `status` (todo/in_progress/done — ' +
+          'semantic bucket; backend maps to the first column of that kind) or `column_id` (exact ' +
+          'swimlane id from get_kanban_board). Prefer column_id when the user named a specific custom ' +
+          'column like "QA Review". After staging, Discord shows a swimlane dropdown so the user can ' +
+          'override before confirming. Does NOT execute — the user must tap Confirm.',
         parameters: {
           type: 'object',
           properties: {
             task_id: { type: 'number' },
             status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
+            column_id: {
+              type: 'string',
+              description:
+                'Exact Kanban column id for the task\'s project (mutually exclusive with status).',
+            },
           },
-          required: ['task_id', 'status'],
+          required: ['task_id'],
           additionalProperties: false,
         },
       },
     },
     handler: async (args, ctx) => {
-      const payload = {
-        task_id: num(args, 'task_id'),
-        status: str(args, 'status') as 'todo' | 'in_progress' | 'done',
-      };
+      const taskId = num(args, 'task_id');
+      const status = optStr(args, 'status') as 'todo' | 'in_progress' | 'done' | undefined;
+      const columnId = optStr(args, 'column_id');
+      if (!status && !columnId) {
+        return { error: 'Pass either status (todo/in_progress/done) or column_id.' };
+      }
+      if (status && columnId) {
+        return { error: 'status and column_id are mutually exclusive — pass one or the other.' };
+      }
+      const task = await getTask(ctx.discordUserId, taskId);
+      const projectId = task.project_id;
+      const payload: {
+        task_id: number;
+        project_id: number;
+        status?: 'todo' | 'in_progress' | 'done';
+        column_id?: string;
+      } = { task_id: taskId, project_id: projectId };
+      if (status) payload.status = status;
+      if (columnId) payload.column_id = columnId;
+
       const pa = await createPendingAction({
         discordUserId: ctx.discordUserId,
         action: 'set_task_status',
         payload,
       });
-      const preview = `**Set status** of task #${payload.task_id} → \`${payload.status}\``;
-      ctx.stagedPendingAction = { id: pa.id, action: 'set_task_status', preview };
+      const target = columnId ?? status!;
+      const preview = `**Set status** of task #${taskId} → \`${target}\``;
+      ctx.stagedPendingAction = {
+        id: pa.id,
+        action: 'set_task_status',
+        preview,
+        ui: {
+          projectId,
+          pickers: [{ kind: 'kanban_column', projectId }],
+        },
+      };
       return { pending_action_id: pa.id, preview };
     },
   },

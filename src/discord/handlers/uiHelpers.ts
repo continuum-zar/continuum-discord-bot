@@ -13,10 +13,12 @@ import type {
 } from '../../agent/tools.js';
 import { listMilestones } from '../../tools/listMilestones.js';
 import { listProjectMembers, memberDisplayName } from '../../tools/projectMembers.js';
+import { getKanbanBoard } from '../../tools/getKanbanBoard.js';
 
 export const MILESTONE_SELECT_PREFIX = 'pa:milestone:';
 export const ASSIGNEE_SELECT_PREFIX = 'pa:assignee:';
 export const ROLE_SELECT_PREFIX = 'pa:role:';
+export const KANBAN_COLUMN_SELECT_PREFIX = 'pa:kanban_column:';
 
 export const NO_MILESTONE_VALUE = 'none';
 const SELECT_OPTION_LIMIT = 24;
@@ -29,6 +31,8 @@ export function customIdForPicker(kind: PickerKind, pendingActionId: string): st
       return `${ASSIGNEE_SELECT_PREFIX}${pendingActionId}`;
     case 'member_role':
       return `${ROLE_SELECT_PREFIX}${pendingActionId}`;
+    case 'kanban_column':
+      return `${KANBAN_COLUMN_SELECT_PREFIX}${pendingActionId}`;
   }
 }
 
@@ -151,6 +155,15 @@ async function loadPickerOptions(discordUserId: string, picker: PickerSpec): Pro
         { label: 'Project manager', value: 'project_manager', description: 'Can assign tasks, manage milestones and members' },
         { label: 'Client', value: 'client', description: 'Read-only client portal access' },
       ];
+    case 'kanban_column': {
+      if (picker.projectId == null) return [];
+      const columns = await getKanbanBoard(discordUserId, picker.projectId);
+      return columns.slice(0, SELECT_OPTION_LIMIT + 1).map((c) => ({
+        label: c.title,
+        value: c.id,
+        description: c.kind.replace('_', ' '),
+      }));
+    }
   }
 }
 
@@ -162,5 +175,7 @@ function defaultPlaceholder(kind: PickerKind): string {
       return 'Pick an assignee';
     case 'member_role':
       return 'Pick a role';
+    case 'kanban_column':
+      return 'Pick a Kanban column';
   }
 }
