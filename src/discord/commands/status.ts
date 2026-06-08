@@ -28,8 +28,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     content:
       `**Continuum link status**\n` +
       `• Account: \`${link.continuum_username ?? link.continuum_user_id}\`\n` +
-      `• Access token: ${expiresIn !== null ? `expires in ~${expiresIn} min` : 'unknown'}\n` +
+      `• Access token: ${expiresIn !== null ? `expires in ~${expiresIn} min (auto-refreshed before expiry)` : 'unknown'}\n` +
       `• Last refresh: ${ageHours}h ago\n\n` +
-      `_Refresh tokens last 24h; stay active to keep the link alive._`,
+      `_Your session stays alive as long as the refresh chain is valid (refresh tokens last 24h after the last activity)._`,
   });
 }

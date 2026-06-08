@@ -145,7 +145,7 @@ async function handle(client: Client, message: Message): Promise<void> {
     if (err instanceof LinkExpiredError) {
       await replyChunks(
         message,
-        'Your Continuum link expired (refresh tokens last 24h). Please run `/link` again.',
+        'Your Continuum link expired — the refresh token is no longer valid (24h of inactivity, or the refresh chain was broken). Please run `/link` again.',
       );
       return;
     }

@@ -4,13 +4,11 @@ import { getBotConfig, setBotConfig } from '../db/botConfig.js';
 
 const config = loadConfig();
 
-const ACCESS_TOKEN_TTL_FALLBACK_SECONDS = 30 * 60;
-
 export interface OAuthTokenResponse {
   access_token: string;
   token_type: 'bearer';
   refresh_token: string;
-  /** Present on authorization_code exchange; absent on refresh — falls back to 30 min. */
+  /** Seconds until access token expires. Absent on refresh — resolve via introspection. */
   expires_in?: number;
   scope?: string;
 }
@@ -137,7 +135,20 @@ export async function introspect(accessToken: string): Promise<IntrospectionResp
   return (await res.json()) as IntrospectionResponse;
 }
 
-export function accessTokenExpiresAt(tokens: OAuthTokenResponse): Date {
-  const seconds = tokens.expires_in ?? ACCESS_TOKEN_TTL_FALLBACK_SECONDS;
-  return new Date(Date.now() + seconds * 1000);
+/**
+ * Resolves the true access-token expiry from the token response.
+ * Prefers `expires_in` (set on authorization_code exchange); falls back to
+ * an introspection round-trip when the OAuth server omits it on refresh.
+ * Throws if neither source yields an expiry — callers should let the link be
+ * retried rather than silently assume a TTL.
+ */
+export async function resolveAccessTokenExpiry(tokens: OAuthTokenResponse): Promise<Date> {
+  if (typeof tokens.expires_in === 'number' && tokens.expires_in > 0) {
+    return new Date(Date.now() + tokens.expires_in * 1000);
+  }
+  const intro = await introspect(tokens.access_token);
+  if (intro.active && typeof intro.exp === 'number') {
+    return new Date(intro.exp * 1000);
+  }
+  throw new OAuthError('Could not resolve access token expiry from token response or introspection');
 }
