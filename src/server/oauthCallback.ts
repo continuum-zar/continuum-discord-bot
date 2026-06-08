@@ -4,7 +4,7 @@ import {
   exchangeCode,
   ensureClientId,
   introspect,
-  accessTokenExpiresAt,
+  resolveAccessTokenExpiry,
 } from '../auth/oauthClient.js';
 import { upsertUserLink } from '../db/userLinks.js';
 import { logger } from '../logger.js';
@@ -62,7 +62,7 @@ export async function handleOAuthCallback(req: Request, res: Response): Promise<
       continuumUsername: intro.username ?? null,
       refreshToken: tokens.refresh_token,
       accessToken: tokens.access_token,
-      accessTokenExpiresAt: accessTokenExpiresAt(tokens),
+      accessTokenExpiresAt: await resolveAccessTokenExpiry(tokens),
     });
 
     logger.info(

@@ -41,9 +41,13 @@ The bot will:
 3. Deploy — Railway builds the Dockerfile automatically.
 4. Health check: `GET /health` on the public URL.
 
-## Token lifetime
+## Session lifetime
 
-Continuum issues 30-minute access tokens and 24-hour refresh tokens (with rotation). The bot proactively refreshes when <5 minutes remain on the access token. **If a user is inactive for more than 24 hours, the refresh chain breaks and they must `/link` again** — this is expected.
+The bot's session is bound to the **refresh-token chain**, not to a fixed timer. Continuum issues short-lived access tokens (currently 30 min) and 24-hour refresh tokens with rotation; the bot transparently introspects the access-token expiry, refreshes when <5 minutes remain, and rotates the refresh token on every refresh. Practical implications:
+
+- A linked user can stay idle past the access-token TTL and the next command will still work — the bot refreshes silently.
+- A session only ends when the refresh token is no longer valid: either >24h of inactivity (the refresh window) or a refresh-chain break (e.g., the server rejects the refresh token). In either case the link is deleted and the user must `/link` again.
+- No fixed 30-minute session ceiling is enforced anywhere in the bot.
 
 ## Slash commands
 
@@ -63,7 +67,7 @@ Continuum issues 30-minute access tokens and 24-hour refresh tokens (with rotati
 4. DM "Create task X in <project>" → preview embed → Confirm → task visible in web app.
 5. DM "Mark task 42 done" → confirm → status updated.
 6. `/unlink` → subsequent DMs prompt to `/link` again.
-7. Wait 30+ minutes, send a message → bot still works (silent refresh).
+7. Wait past the access-token TTL (30+ min today) but under 24h, send a message → bot still works (silent refresh).
 8. Wait >24h, send a message → bot prompts to re-link.
 
 ## Architecture

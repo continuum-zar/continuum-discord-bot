@@ -1,7 +1,7 @@
 import {
-  accessTokenExpiresAt,
   OAuthError,
   refreshTokens,
+  resolveAccessTokenExpiry,
 } from './oauthClient.js';
 import {
   getUserLink,
@@ -69,7 +69,7 @@ export async function forceRefresh(discordUserId: string): Promise<string> {
 async function doRefresh(link: UserLink): Promise<string> {
   try {
     const tokens = await refreshTokens(link.refresh_token);
-    const expiresAt = accessTokenExpiresAt(tokens);
+    const expiresAt = await resolveAccessTokenExpiry(tokens);
     await updateTokensForUser({
       discordUserId: link.discord_user_id,
       refreshToken: tokens.refresh_token,
