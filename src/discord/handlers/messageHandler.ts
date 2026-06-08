@@ -85,9 +85,9 @@ async function handle(client: Client, message: Message): Promise<void> {
 
       if (
         (action === 'create_task' || action === 'draft_task') &&
-        result.stagedPendingAction.projectId != null
+        result.stagedPendingAction.ui?.projectId != null
       ) {
-        const projectId = result.stagedPendingAction.projectId;
+        const projectId = result.stagedPendingAction.ui.projectId;
         try {
           const milestones = await listMilestones(message.author.id, projectId);
           const selectRow = buildMilestoneSelectRow(ids.milestoneSelect, milestones);

@@ -15,6 +15,24 @@ import type {
 } from '../api/types.js';
 import { generateDraftTasks } from '../tools/draftTasks.js';
 
+export type PickerKind = 'milestone' | 'assignee' | 'member_role';
+
+export interface PickerSpec {
+  kind: PickerKind;
+  /** Project context for data loaders that need it (milestone/assignee). Required for those kinds. */
+  projectId?: number;
+  placeholder?: string;
+}
+
+export interface StagedPendingActionUi {
+  /** Project context shared by pickers + previews. */
+  projectId?: number;
+  /** Selects to render alongside Confirm/Cancel. */
+  pickers?: PickerSpec[];
+  /** Destructive actions get a red Confirm button and a warning footer. */
+  destructive?: boolean;
+}
+
 export interface ToolContext {
   discordUserId: string;
   /** When non-null, indicates the agent staged a pending action that needs UI confirmation. */
@@ -22,8 +40,7 @@ export interface ToolContext {
     id: string;
     action: string;
     preview: string;
-    /** Present for create_task — used to render the milestone picker. */
-    projectId?: number;
+    ui?: StagedPendingActionUi;
   } | null;
 }
 
@@ -408,7 +425,10 @@ export const writeTools: Record<string, ToolHandler> = {
         id: pa.id,
         action: 'create_task',
         preview,
-        projectId: payload.project_id,
+        ui: {
+          projectId: payload.project_id,
+          pickers: [{ kind: 'milestone', projectId: payload.project_id }],
+        },
       };
       return { pending_action_id: pa.id, preview };
     },
@@ -487,7 +507,10 @@ export const writeTools: Record<string, ToolHandler> = {
         id: pa.id,
         action: 'draft_task',
         preview,
-        projectId,
+        ui: {
+          projectId,
+          pickers: [{ kind: 'milestone', projectId }],
+        },
       };
       return {
         pending_action_id: pa.id,
