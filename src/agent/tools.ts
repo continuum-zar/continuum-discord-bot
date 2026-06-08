@@ -12,8 +12,20 @@ import type {
   AgentRunMode,
   CreateTaskInput,
   GeneratedTask,
+  LoggedHourCreateInput,
+  ProjectMemberRole,
+  TaskUpdateInput,
+  WorkSession,
 } from '../api/types.js';
 import { generateDraftTasks } from '../tools/draftTasks.js';
+import { listMyTasks } from '../tools/listMyTasks.js';
+import { getTaskTimeline } from '../tools/getTaskTimeline.js';
+import { listPendingInvitations } from '../tools/invitations.js';
+import {
+  formatDuration,
+  getActiveSession,
+} from '../tools/workSessions.js';
+import { normalizeLoggedHourDate } from '../tools/logTime.js';
 
 export type PickerKind = 'milestone' | 'assignee' | 'member_role';
 
@@ -75,6 +87,20 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+function sessionElapsedSeconds(session: WorkSession): number {
+  if (typeof session.current_duration_seconds === 'number') {
+    return session.current_duration_seconds;
+  }
+  if (session.status === 'active' && session.last_resumed_at) {
+    const resumed = new Date(session.last_resumed_at).getTime();
+    if (Number.isFinite(resumed)) {
+      const extra = Math.max(0, Math.floor((Date.now() - resumed) / 1000));
+      return (session.duration_seconds ?? 0) + extra;
+    }
+  }
+  return session.duration_seconds ?? 0;
+}
+
 export interface DraftTaskPayload {
   project_id: number;
   prompt: string;
@@ -118,6 +144,107 @@ export interface StartBuildPayload {
 export interface StartReviewPayload {
   task_id: number;
   run_id: string;
+}
+
+export interface UpdateTaskPayload {
+  task_id: number;
+  updates: TaskUpdateInput;
+}
+
+export interface DeleteTaskPayload {
+  task_id: number;
+  title?: string;
+}
+
+export interface LinkTaskMilestonePayload {
+  task_id: number;
+  project_id: number;
+  milestone_id?: number | null;
+}
+
+export interface LogTimePayload extends LoggedHourCreateInput {
+  project_name?: string;
+  task_title?: string;
+}
+
+export interface StartWorkSessionPayload {
+  project_id: number;
+  project_name?: string;
+  task_id?: number;
+  task_title?: string;
+  note?: string;
+}
+
+export interface PauseWorkSessionPayload {
+  session_id: number;
+  project_id: number;
+  project_name?: string;
+}
+
+export interface ResumeWorkSessionPayload {
+  session_id: number;
+  project_id: number;
+  project_name?: string;
+}
+
+export interface StopWorkSessionPayload {
+  session_id: number;
+  project_id: number;
+  project_name?: string;
+  elapsed_seconds: number;
+  note?: string;
+}
+
+export interface SubmitIssueReportPayload {
+  message: string;
+  contact_email?: string;
+}
+
+export interface InvitationPayload {
+  invitation_id: number;
+  project_id: number;
+  project_name: string;
+  role: string;
+}
+
+export interface AssignTaskPayload {
+  task_id: number;
+  project_id: number;
+  user_ids?: number[];
+  assignee_name?: string;
+}
+
+export interface CreateMilestonePayload {
+  project_id: number;
+  project_name?: string;
+  name: string;
+  due_date?: string;
+  description?: string;
+}
+
+export interface UpdateMilestonePayload {
+  milestone_id: number;
+  milestone_name?: string;
+  updates: { name?: string; due_date?: string; description?: string };
+}
+
+export interface DeleteMilestonePayload {
+  milestone_id: number;
+  milestone_name: string;
+}
+
+export interface InviteMemberPayload {
+  project_id: number;
+  project_name?: string;
+  email: string;
+  role?: ProjectMemberRole;
+}
+
+export interface RemoveMemberPayload {
+  project_id: number;
+  project_name?: string;
+  user_id: number;
+  member_name: string;
 }
 
 export function buildDraftTaskPreview(
@@ -185,6 +312,149 @@ export function buildCreateTaskPreview(payload: CreateTaskInput, milestoneName?:
     (payload.due_date ? `\n• Due: ${payload.due_date}` : '') +
     milestoneLine
   );
+}
+
+export function buildUpdateTaskPreview(payload: UpdateTaskPayload): string {
+  const lines = [`**Update task #${payload.task_id}**`];
+  const u = payload.updates;
+  if (u.title != null) lines.push(`• Title → ${u.title}`);
+  if (u.description != null) lines.push(`• Description → ${truncate(u.description, 200)}`);
+  if (u.due_date != null) lines.push(`• Due → ${u.due_date}`);
+  if (u.scope_weight != null) lines.push(`• Scope → ${u.scope_weight}`);
+  if (u.priority != null) lines.push(`• Priority → ${u.priority}`);
+  if (u.estimated_hours != null) lines.push(`• Estimate → ${u.estimated_hours}h`);
+  if (u.labels != null) lines.push(`• Labels → ${u.labels.length === 0 ? '(none)' : u.labels.join(', ')}`);
+  return lines.join('\n');
+}
+
+export function buildDeleteTaskPreview(payload: DeleteTaskPayload): string {
+  return (
+    `**Delete task #${payload.task_id}**` +
+    (payload.title ? `\n• Title: ${payload.title}` : '') +
+    '\n_This is permanent._'
+  );
+}
+
+export function buildLinkTaskMilestonePreview(
+  payload: LinkTaskMilestonePayload,
+  milestoneName?: string | null,
+): string {
+  const line =
+    payload.milestone_id == null
+      ? '_(pick a milestone from the dropdown — or pick No milestone to unlink)_'
+      : milestoneName
+        ? `${milestoneName} (#${payload.milestone_id})`
+        : `#${payload.milestone_id}`;
+  return `**Set milestone** for task #${payload.task_id}\n• Milestone: ${line}`;
+}
+
+export function buildLogTimePreview(payload: LogTimePayload): string {
+  const project = payload.project_name ? `${payload.project_name} (#${payload.project_id})` : `project #${payload.project_id}`;
+  const task = payload.task_id != null
+    ? payload.task_title ? ` · task ${payload.task_title} (#${payload.task_id})` : ` · task #${payload.task_id}`
+    : '';
+  const hours = payload.hours != null
+    ? `${payload.hours}h`
+    : payload.duration_minutes != null
+      ? `${payload.duration_minutes}min`
+      : '(unspecified)';
+  return (
+    `**Log time** in ${project}${task}\n` +
+    `• Hours: ${hours}\n` +
+    `• Date: ${payload.date}\n` +
+    `• Description: ${truncate(payload.description, 240)}`
+  );
+}
+
+export function buildStartWorkSessionPreview(payload: StartWorkSessionPayload): string {
+  const project = payload.project_name ?? `project #${payload.project_id}`;
+  const task = payload.task_id != null
+    ? payload.task_title ? `\n• Task: ${payload.task_title} (#${payload.task_id})` : `\n• Task: #${payload.task_id}`
+    : '';
+  return (
+    `**Start work session** in ${project}${task}` +
+    (payload.note ? `\n• Note: ${truncate(payload.note, 200)}` : '')
+  );
+}
+
+export function buildPauseWorkSessionPreview(payload: PauseWorkSessionPayload): string {
+  const project = payload.project_name ?? `project #${payload.project_id}`;
+  return `**Pause work session** in ${project}`;
+}
+
+export function buildResumeWorkSessionPreview(payload: ResumeWorkSessionPayload): string {
+  const project = payload.project_name ?? `project #${payload.project_id}`;
+  return `**Resume work session** in ${project}`;
+}
+
+export function buildStopWorkSessionPreview(payload: StopWorkSessionPayload): string {
+  const project = payload.project_name ?? `project #${payload.project_id}`;
+  return (
+    `**Stop work session** in ${project}\n` +
+    `• Elapsed: ${formatDuration(payload.elapsed_seconds)}` +
+    (payload.note ? `\n• Note: ${truncate(payload.note, 200)}` : '')
+  );
+}
+
+export function buildSubmitIssueReportPreview(payload: SubmitIssueReportPayload): string {
+  return (
+    `**Submit issue report**\n` +
+    `• Message: ${truncate(payload.message, 240)}` +
+    (payload.contact_email ? `\n• Contact email: ${payload.contact_email}` : '')
+  );
+}
+
+export function buildAcceptInvitationPreview(payload: InvitationPayload): string {
+  return `**Accept invitation** to ${payload.project_name} (#${payload.project_id})\n• Role: ${payload.role}`;
+}
+
+export function buildDeclineInvitationPreview(payload: InvitationPayload): string {
+  return `**Decline invitation** to ${payload.project_name} (#${payload.project_id})\n• Role: ${payload.role}`;
+}
+
+export function buildAssignTaskPreview(payload: AssignTaskPayload): string {
+  const assignee = payload.assignee_name
+    ? payload.assignee_name
+    : payload.user_ids && payload.user_ids.length > 0
+      ? `user #${payload.user_ids[0]}`
+      : '_(pick from the dropdown)_';
+  return `**Assign task #${payload.task_id}** to ${assignee}`;
+}
+
+export function buildCreateMilestonePreview(payload: CreateMilestonePayload): string {
+  const project = payload.project_name ? `${payload.project_name} (#${payload.project_id})` : `project #${payload.project_id}`;
+  return (
+    `**Create milestone** in ${project}\n` +
+    `• Name: ${payload.name}` +
+    (payload.due_date ? `\n• Due: ${payload.due_date.slice(0, 10)}` : '') +
+    (payload.description ? `\n• Description: ${truncate(payload.description, 240)}` : '')
+  );
+}
+
+export function buildUpdateMilestonePreview(payload: UpdateMilestonePayload): string {
+  const lines = [`**Update milestone #${payload.milestone_id}**` + (payload.milestone_name ? ` (${payload.milestone_name})` : '')];
+  if (payload.updates.name != null) lines.push(`• Name → ${payload.updates.name}`);
+  if (payload.updates.due_date != null) lines.push(`• Due → ${payload.updates.due_date.slice(0, 10)}`);
+  if (payload.updates.description != null) lines.push(`• Description → ${truncate(payload.updates.description, 240)}`);
+  return lines.join('\n');
+}
+
+export function buildDeleteMilestonePreview(payload: DeleteMilestonePayload): string {
+  return `**Delete milestone #${payload.milestone_id}** (${payload.milestone_name})\n_This is permanent._`;
+}
+
+export function buildInviteMemberPreview(payload: InviteMemberPayload): string {
+  const project = payload.project_name ? `${payload.project_name} (#${payload.project_id})` : `project #${payload.project_id}`;
+  return (
+    `**Invite member** to ${project}\n` +
+    `• Email: ${payload.email}\n` +
+    `• Role: ${payload.role ?? 'developer'} _(pick a different role from the dropdown if needed)_`
+  );
+}
+
+export function buildRemoveMemberPreview(payload: RemoveMemberPayload): string {
+  const project = payload.project_name ? `${payload.project_name} (#${payload.project_id})` : `project #${payload.project_id}`;
+  return `**Remove ${payload.member_name}** from ${project}\n_This is permanent — the user loses access._`;
 }
 
 export const readTools: Record<string, ToolHandler> = {
@@ -368,6 +638,83 @@ export const readTools: Record<string, ToolHandler> = {
     },
     handler: async (args, ctx) =>
       projectQuery(ctx.discordUserId, num(args, 'project_id'), str(args, 'query')),
+  },
+
+  list_my_tasks: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'list_my_tasks',
+        description:
+          'List tasks assigned to the linked user. Convenience wrapper around list_tasks with assigned_to=me. ' +
+          'Optional filters: project_id, status, limit.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            status: { type: 'string', enum: ['todo', 'in_progress', 'done'] },
+            limit: { type: 'number', minimum: 1, maximum: 100 },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) =>
+      listMyTasks(ctx.discordUserId, {
+        ...(optNum(args, 'project_id') != null ? { project_id: optNum(args, 'project_id')! } : {}),
+        ...(optStr(args, 'status') ? { status: optStr(args, 'status') as 'todo' | 'in_progress' | 'done' } : {}),
+        ...(optNum(args, 'limit') != null ? { limit: optNum(args, 'limit')! } : {}),
+      }),
+  },
+
+  get_task_timeline: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'get_task_timeline',
+        description:
+          'Fetch the activity timeline for a task (status changes, comments, assignments, logged hours, commits) in chronological order.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            limit: { type: 'number', minimum: 1, maximum: 200 },
+          },
+          required: ['task_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) =>
+      getTaskTimeline(ctx.discordUserId, num(args, 'task_id'), {
+        ...(optNum(args, 'limit') != null ? { limit: optNum(args, 'limit')! } : {}),
+      }),
+  },
+
+  get_active_session: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'get_active_session',
+        description:
+          "Get the user's current active or paused work session, or null if none. Call this before staging pause/resume/stop.",
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
+    handler: async (_args, ctx) => getActiveSession(ctx.discordUserId),
+  },
+
+  list_pending_invitations: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'list_pending_invitations',
+        description:
+          'List project invitations awaiting the linked user. Use this before staging accept_invitation / decline_invitation to confirm the invitation_id and project name.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
+    handler: async (_args, ctx) => listPendingInvitations(ctx.discordUserId),
   },
 };
 
@@ -803,6 +1150,436 @@ export const writeTools: Record<string, ToolHandler> = {
         instructionsLine +
         `\n\nChoose **Open PR** or **Direct push** below, then Confirm.`;
       ctx.stagedPendingAction = { id: pa.id, action: 'start_build', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  update_task: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'update_task',
+        description:
+          'Stage edits to a task (any project member). Use for editing title, description, due date, scope, priority, ' +
+          'estimate, or labels. For status changes use set_task_status; for milestone use link_task_milestone; ' +
+          'for assignment use assign_task; for branches use the branch tools. Does NOT execute — user must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            title: { type: 'string', minLength: 1, maxLength: 255 },
+            description: { type: 'string', maxLength: 10000 },
+            due_date: { type: 'string', description: 'ISO date (YYYY-MM-DD) or full datetime.' },
+            scope_weight: { type: 'string', enum: ['XS', 'S', 'M', 'L', 'XL'] },
+            priority: { type: 'string', enum: ['high', 'medium', 'low', 'info'] },
+            estimated_hours: { type: 'number', minimum: 0 },
+            labels: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['task_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const updates: TaskUpdateInput = {};
+      if (optStr(args, 'title') != null) updates.title = optStr(args, 'title')!;
+      if (optStr(args, 'description') != null) updates.description = optStr(args, 'description')!;
+      if (optStr(args, 'due_date') != null) updates.due_date = optStr(args, 'due_date')!;
+      const sw = optStr(args, 'scope_weight');
+      if (sw != null) updates.scope_weight = sw as TaskUpdateInput['scope_weight'];
+      const pr = optStr(args, 'priority');
+      if (pr != null) updates.priority = pr as TaskUpdateInput['priority'];
+      if (optNum(args, 'estimated_hours') != null) updates.estimated_hours = optNum(args, 'estimated_hours')!;
+      if (Array.isArray(args.labels)) updates.labels = args.labels as string[];
+
+      if (Object.keys(updates).length === 0) {
+        return { error: 'No fields to update — pass at least one of title/description/due_date/scope_weight/priority/estimated_hours/labels.' };
+      }
+
+      const payload: UpdateTaskPayload = { task_id: num(args, 'task_id'), updates };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'update_task',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildUpdateTaskPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'update_task', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  delete_task: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'delete_task',
+        description:
+          'Stage permanent deletion of a task (any project member). Destructive. ' +
+          'Pass the task title in `title` for a clearer preview. Does NOT execute — user must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            title: { type: 'string' },
+          },
+          required: ['task_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: DeleteTaskPayload = {
+        task_id: num(args, 'task_id'),
+        ...(optStr(args, 'title') ? { title: optStr(args, 'title')! } : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'delete_task',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildDeleteTaskPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'delete_task', preview, ui: { destructive: true } };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  link_task_milestone: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'link_task_milestone',
+        description:
+          'Stage linking/unlinking a task to a milestone. After staging, Discord shows a milestone dropdown ' +
+          '(including "No milestone" to clear). The user picks then Confirms. Do NOT pass milestone_id ' +
+          "yourself unless the user explicitly named one and you resolved it via list_milestones.",
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'number' },
+            project_id: { type: 'number', description: 'Project the task belongs to — needed to populate the picker.' },
+          },
+          required: ['task_id', 'project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: LinkTaskMilestonePayload = {
+        task_id: num(args, 'task_id'),
+        project_id: num(args, 'project_id'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'link_task_milestone',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildLinkTaskMilestonePreview(payload);
+      ctx.stagedPendingAction = {
+        id: pa.id,
+        action: 'link_task_milestone',
+        preview,
+        ui: {
+          projectId: payload.project_id,
+          pickers: [{ kind: 'milestone', projectId: payload.project_id }],
+        },
+      };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  log_time: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'log_time',
+        description:
+          'Stage a time-log entry (any project member). Requires project_id, description, and one of `hours` or `duration_minutes`. ' +
+          'Optional: task_id, date (defaults to today). User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            project_name: { type: 'string', description: 'For preview only.' },
+            task_id: { type: 'number' },
+            task_title: { type: 'string', description: 'For preview only.' },
+            hours: { type: 'number', minimum: 0.01, maximum: 24, description: 'Hours as a decimal (e.g. 1.5).' },
+            duration_minutes: { type: 'number', minimum: 1, maximum: 1440 },
+            description: { type: 'string', minLength: 1, maxLength: 1000 },
+            date: { type: 'string', description: 'ISO date YYYY-MM-DD. Defaults to today.' },
+          },
+          required: ['project_id', 'description'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const hours = optNum(args, 'hours');
+      const durationMinutes = optNum(args, 'duration_minutes');
+      if (hours == null && durationMinutes == null) {
+        return { error: 'Pass either hours or duration_minutes.' };
+      }
+      const payload: LogTimePayload = {
+        project_id: num(args, 'project_id'),
+        ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
+        ...(optNum(args, 'task_id') != null ? { task_id: optNum(args, 'task_id')! } : {}),
+        ...(optStr(args, 'task_title') ? { task_title: optStr(args, 'task_title')! } : {}),
+        ...(hours != null ? { hours } : {}),
+        ...(durationMinutes != null ? { duration_minutes: durationMinutes } : {}),
+        description: str(args, 'description'),
+        date: normalizeLoggedHourDate(optStr(args, 'date')),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'log_time',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildLogTimePreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'log_time', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  start_work_session: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'start_work_session',
+        description:
+          'Stage starting a new work session (clocks the user in to a project, optionally a task). The user must Confirm. ' +
+          'If they already have an active session, the API may reject — call get_active_session first if unsure.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'number' },
+            project_name: { type: 'string', description: 'For preview only.' },
+            task_id: { type: 'number' },
+            task_title: { type: 'string', description: 'For preview only.' },
+            note: { type: 'string', maxLength: 500 },
+          },
+          required: ['project_id'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: StartWorkSessionPayload = {
+        project_id: num(args, 'project_id'),
+        ...(optStr(args, 'project_name') ? { project_name: optStr(args, 'project_name')! } : {}),
+        ...(optNum(args, 'task_id') != null ? { task_id: optNum(args, 'task_id')! } : {}),
+        ...(optStr(args, 'task_title') ? { task_title: optStr(args, 'task_title')! } : {}),
+        ...(optStr(args, 'note') ? { note: optStr(args, 'note')! } : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'start_work_session',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildStartWorkSessionPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'start_work_session', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  pause_work_session: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'pause_work_session',
+        description:
+          'Stage pausing the active work session. Internally calls GET /work-sessions/active to find the session id; ' +
+          'if none, returns no_active_session=true. Does NOT execute — user must Confirm.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
+    handler: async (_args, ctx) => {
+      const session = await getActiveSession(ctx.discordUserId);
+      if (!session) return { no_active_session: true };
+      const payload: PauseWorkSessionPayload = {
+        session_id: session.id,
+        project_id: session.project_id,
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'pause_work_session',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildPauseWorkSessionPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'pause_work_session', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  resume_work_session: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'resume_work_session',
+        description:
+          'Stage resuming a paused work session. Internally calls GET /work-sessions/active to find the session id; ' +
+          'if none, returns no_active_session=true. Does NOT execute — user must Confirm.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
+    handler: async (_args, ctx) => {
+      const session = await getActiveSession(ctx.discordUserId);
+      if (!session) return { no_active_session: true };
+      const payload: ResumeWorkSessionPayload = {
+        session_id: session.id,
+        project_id: session.project_id,
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'resume_work_session',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildResumeWorkSessionPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'resume_work_session', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  stop_work_session: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'stop_work_session',
+        description:
+          'Stage stopping the active work session (logs it as a LoggedHour). Optional note becomes the LoggedHour description. ' +
+          'Internally calls GET /work-sessions/active to find the session id; if none, returns no_active_session=true. ' +
+          'Does NOT execute — user must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: { note: { type: 'string', maxLength: 1000 } },
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const session = await getActiveSession(ctx.discordUserId);
+      if (!session) return { no_active_session: true };
+      const elapsed = sessionElapsedSeconds(session);
+      const payload: StopWorkSessionPayload = {
+        session_id: session.id,
+        project_id: session.project_id,
+        elapsed_seconds: elapsed,
+        ...(optStr(args, 'note') ? { note: optStr(args, 'note')! } : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'stop_work_session',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildStopWorkSessionPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'stop_work_session', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  submit_issue_report: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'submit_issue_report',
+        description: "Stage submitting an issue/bug report to the Continuum team. User must Confirm.",
+        parameters: {
+          type: 'object',
+          properties: {
+            message: { type: 'string', minLength: 1, maxLength: 20000 },
+            contact_email: { type: 'string', description: 'Optional email for follow-up.' },
+          },
+          required: ['message'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: SubmitIssueReportPayload = {
+        message: str(args, 'message'),
+        ...(optStr(args, 'contact_email') ? { contact_email: optStr(args, 'contact_email')! } : {}),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'submit_issue_report',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildSubmitIssueReportPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'submit_issue_report', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  accept_invitation: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'accept_invitation',
+        description:
+          'Stage accepting a project invitation. Call list_pending_invitations first to find invitation_id and project name. User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            invitation_id: { type: 'number' },
+            project_id: { type: 'number' },
+            project_name: { type: 'string' },
+            role: { type: 'string' },
+          },
+          required: ['invitation_id', 'project_id', 'project_name', 'role'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: InvitationPayload = {
+        invitation_id: num(args, 'invitation_id'),
+        project_id: num(args, 'project_id'),
+        project_name: str(args, 'project_name'),
+        role: str(args, 'role'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'accept_invitation',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildAcceptInvitationPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'accept_invitation', preview };
+      return { pending_action_id: pa.id, preview };
+    },
+  },
+
+  decline_invitation: {
+    schema: {
+      type: 'function',
+      function: {
+        name: 'decline_invitation',
+        description:
+          'Stage declining a project invitation (destructive). Call list_pending_invitations first. User must Confirm.',
+        parameters: {
+          type: 'object',
+          properties: {
+            invitation_id: { type: 'number' },
+            project_id: { type: 'number' },
+            project_name: { type: 'string' },
+            role: { type: 'string' },
+          },
+          required: ['invitation_id', 'project_id', 'project_name', 'role'],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const payload: InvitationPayload = {
+        invitation_id: num(args, 'invitation_id'),
+        project_id: num(args, 'project_id'),
+        project_name: str(args, 'project_name'),
+        role: str(args, 'role'),
+      };
+      const pa = await createPendingAction({
+        discordUserId: ctx.discordUserId,
+        action: 'decline_invitation',
+        payload: payload as unknown as Record<string, unknown>,
+      });
+      const preview = buildDeclineInvitationPreview(payload);
+      ctx.stagedPendingAction = { id: pa.id, action: 'decline_invitation', preview, ui: { destructive: true } };
       return { pending_action_id: pa.id, preview };
     },
   },
